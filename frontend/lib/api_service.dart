@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:trip_together/api_constants.dart';
 
@@ -11,11 +12,11 @@ class ApiService {
       if (response.statusCode == 200) {
         return jsonDecode(response.body);
       } else {
-        print('Błąd serwera: ${response.statusCode}');
+        debugPrint('Błąd serwera: ${response.statusCode}');
         return [];
       }
     } catch (e) {
-      print('Błąd połączenia: $e');
+      debugPrint('Błąd połączenia: $e');
       return [];
     }
   }

@@ -1,3 +1,8 @@
+from django.test import TestCase
+from django.contrib.auth import get_user_model
+from django.db import IntegrityError
+import datetime
+
 from rest_framework.test import APITestCase
 from rest_framework import status
 
@@ -25,3 +30,184 @@ class AllApiTests(APITestCase):
         self.assertEqual(self.client.post('/api/v1/events/e-1/polls/p-1/vote/').status_code, status.HTTP_200_OK)
         self.assertEqual(self.client.put('/api/v1/events/e-1/polls/p-1/close/').status_code, status.HTTP_200_OK)
         self.assertEqual(self.client.get('/api/v1/events/e-1/messages/').status_code, status.HTTP_200_OK)
+
+
+User = get_user_model()
+
+
+class UserModelTests(TestCase):
+    def test_create_user_with_email_and_password(self):
+        user = User.objects.create_user(email='alice@example.com', password='secret123', username='alice')
+        self.assertEqual(user.email, 'alice@example.com')
+        self.assertTrue(user.check_password('secret123'))
+
+    def test_email_is_username_field(self):
+        self.assertEqual(User.USERNAME_FIELD, 'email')
+
+    def test_email_uniqueness_enforced(self):
+        User.objects.create_user(email='bob@example.com', password='x', username='bob')
+        with self.assertRaises(IntegrityError):
+            User.objects.create_user(email='bob@example.com', password='y', username='bob2')
+
+    def test_optional_fields_default_to_blank(self):
+        user = User.objects.create_user(email='c@example.com', password='x', username='c')
+        self.assertEqual(user.bio, '')
+        self.assertIsNone(user.date_of_birth)
+        self.assertEqual(user.phone_number, '')
+
+    def test_created_at_is_set_on_save(self):
+        user = User.objects.create_user(email='d@example.com', password='x', username='d')
+        self.assertIsNotNone(user.created_at)
+
+    def test_updated_at_changes_on_update(self):
+        user = User.objects.create_user(email='e@example.com', password='x', username='e')
+        old_ts = user.updated_at
+        user.bio = 'changed'
+        user.save()
+        user.refresh_from_db()
+        self.assertGreaterEqual(user.updated_at, old_ts)
+
+    def test_str_returns_email(self):
+        user = User.objects.create_user(email='f@example.com', password='x', username='f')
+        self.assertEqual(str(user), 'f@example.com')
+
+
+class EventModelTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email='owner@example.com', password='x', username='owner')
+
+    def test_create_event_with_required_fields(self):
+        from api.models import Event
+        event = Event.objects.create(
+            title='Rome Trip',
+            destination_city='Rome',
+            destination_country='Italy',
+            start_date=datetime.date(2026, 6, 1),
+            end_date=datetime.date(2026, 6, 10),
+            created_by=self.user,
+        )
+        self.assertEqual(event.title, 'Rome Trip')
+
+    def test_default_status_is_draft(self):
+        from api.models import Event
+        event = Event.objects.create(
+            title='Paris',
+            destination_city='Paris',
+            destination_country='France',
+            start_date=datetime.date(2026, 7, 1),
+            end_date=datetime.date(2026, 7, 5),
+            created_by=self.user,
+        )
+        self.assertEqual(event.status, Event.Status.DRAFT)
+
+    def test_status_choices_are_valid(self):
+        from api.models import Event
+        for value in ('DRAFT', 'ACTIVE', 'COMPLETED', 'CANCELLED'):
+            self.assertIn(value, [c.value for c in Event.Status])
+
+    def test_max_members_is_nullable(self):
+        from api.models import Event
+        event = Event.objects.create(
+            title='Open Trip',
+            destination_city='Berlin',
+            destination_country='Germany',
+            start_date=datetime.date(2026, 8, 1),
+            end_date=datetime.date(2026, 8, 3),
+            created_by=self.user,
+        )
+        self.assertIsNone(event.max_members)
+
+    def test_created_at_is_set_automatically(self):
+        from api.models import Event
+        event = Event.objects.create(
+            title='Auto TS',
+            destination_city='Madrid',
+            destination_country='Spain',
+            start_date=datetime.date(2026, 9, 1),
+            end_date=datetime.date(2026, 9, 2),
+            created_by=self.user,
+        )
+        self.assertIsNotNone(event.created_at)
+
+    def test_deleting_creator_cascades_to_event(self):
+        from api.models import Event
+        event = Event.objects.create(
+            title='Cascade',
+            destination_city='Oslo',
+            destination_country='Norway',
+            start_date=datetime.date(2026, 10, 1),
+            end_date=datetime.date(2026, 10, 2),
+            created_by=self.user,
+        )
+        event_pk = event.pk
+        self.user.delete()
+        self.assertFalse(Event.objects.filter(pk=event_pk).exists())
+
+    def test_str_returns_title(self):
+        from api.models import Event
+        event = Event.objects.create(
+            title='Named Event',
+            destination_city='Athens',
+            destination_country='Greece',
+            start_date=datetime.date(2026, 5, 1),
+            end_date=datetime.date(2026, 5, 7),
+            created_by=self.user,
+        )
+        self.assertEqual(str(event), 'Named Event')
+
+
+class MembershipModelTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(email='owner2@example.com', password='x', username='owner2')
+        self.member = User.objects.create_user(email='member@example.com', password='x', username='member')
+        from api.models import Event
+        self.event = Event.objects.create(
+            title='Group Trip',
+            destination_city='Lisbon',
+            destination_country='Portugal',
+            start_date=datetime.date(2026, 6, 1),
+            end_date=datetime.date(2026, 6, 5),
+            created_by=self.owner,
+        )
+
+    def test_create_membership(self):
+        from api.models import Membership
+        m = Membership.objects.create(user=self.owner, event=self.event, role=Membership.Role.OWNER)
+        self.assertEqual(m.role, Membership.Role.OWNER)
+
+    def test_default_role_is_member(self):
+        from api.models import Membership
+        m = Membership.objects.create(user=self.member, event=self.event)
+        self.assertEqual(m.role, Membership.Role.MEMBER)
+
+    def test_unique_together_user_event(self):
+        from api.models import Membership
+        Membership.objects.create(user=self.member, event=self.event)
+        with self.assertRaises(IntegrityError):
+            Membership.objects.create(user=self.member, event=self.event)
+
+    def test_invited_by_is_nullable(self):
+        from api.models import Membership
+        m = Membership.objects.create(user=self.member, event=self.event, invited_by=None)
+        self.assertIsNone(m.invited_by)
+
+    def test_invited_by_can_reference_another_user(self):
+        from api.models import Membership
+        m = Membership.objects.create(user=self.member, event=self.event, invited_by=self.owner)
+        self.assertEqual(m.invited_by, self.owner)
+
+    def test_joined_at_is_set_on_create(self):
+        from api.models import Membership
+        m = Membership.objects.create(user=self.member, event=self.event)
+        self.assertIsNotNone(m.joined_at)
+
+    def test_role_choices_are_valid(self):
+        from api.models import Membership
+        for value in ('OWNER', 'ADMIN', 'MEMBER'):
+            self.assertIn(value, [c.value for c in Membership.Role])
+
+    def test_str_representation(self):
+        from api.models import Membership
+        m = Membership.objects.create(user=self.member, event=self.event, role=Membership.Role.MEMBER)
+        self.assertIn('member@example.com', str(m))
+        self.assertIn('Group Trip', str(m))

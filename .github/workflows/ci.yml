@@ -1,0 +1,58 @@
+name: TripTogether CI/CD
+
+on:
+  push:
+    branches: [ "develop", "main" ]
+  pull_request:
+    branches: [ "develop", "main" ]
+
+jobs:
+  # ZADANIE 1: BACKEND (Django)
+  test-backend:
+    name: Test Django API
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install Django Dependencies
+      run: |
+        cd backend
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run Django Tests
+      run: |
+        cd backend
+        python manage.py test
+
+  # ZADANIE 2: FRONTEND (Flutter)
+  test-frontend:
+    name: Test Flutter App
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        channel: 'stable'
+
+    - name: Get Flutter Packages
+      run: |
+        cd frontend
+        flutter pub get
+
+    - name: Check Formatting & Rules (Linter)
+      run: |
+        cd frontend
+        flutter analyze
+
+    - name: Run Flutter Tests
+      run: |
+        cd frontend
+        flutter test

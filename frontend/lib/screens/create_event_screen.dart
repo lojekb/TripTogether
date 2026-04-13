@@ -5,10 +5,10 @@ import 'package:intl/intl.dart';
 import 'package:flutter/foundation.dart'; 
 
 class CreateEventScreen extends StatefulWidget {
-  const CreateEventScreen({Key? key}) : super(key: key);
+  const CreateEventScreen({super.key});
 
   @override
-  _CreateEventScreenState createState() => _CreateEventScreenState();
+  State<CreateEventScreen> createState() => _CreateEventScreenState();
 }
 
 class _CreateEventScreenState extends State<CreateEventScreen> {
@@ -88,6 +88,8 @@ class _CreateEventScreenState extends State<CreateEventScreen> {
         }),
       );
 
+      if (!mounted) return;
+
       if (response.statusCode == 201) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Wydarzenie zostało utworzone!')),
@@ -99,13 +101,16 @@ class _CreateEventScreenState extends State<CreateEventScreen> {
         );
       }
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Błąd połączenia: $e')),
       );
     } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 

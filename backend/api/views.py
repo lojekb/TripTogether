@@ -3,6 +3,9 @@ from rest_framework.response import Response
 from rest_framework import status
 import uuid
 
+from .models import Event, User
+from .serializers import EventSerializer
+
 # 1. AUTORYZACJA I UŻYTKOWNICY
 @api_view(['POST'])
 def register_user(request):
@@ -22,8 +25,19 @@ def user_profile(request):
 @api_view(['GET', 'POST'])
 def event_list_create(request):
     if request.method == 'POST':
-        return Response({"id": str(uuid.uuid4()), "status": "DRAFT"}, status=status.HTTP_201_CREATED)
-    return Response([{"id": "evt-1", "title": "Majówka w Rzymie"}], status=status.HTTP_200_OK)
+        serializer = EventSerializer(data=request.data)
+        if serializer.is_valid():
+            user = User.objects.first()
+            if not user:
+                return Response({"error": "Brak użytkowników w bazie. Utwórz użytkownika."}, status=status.HTTP_400_BAD_REQUEST)
+            serializer.save(created_by=user)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+    events = Event.objects.all()
+    serializer = EventSerializer(events, many=True)
+    return Response(serializer.data, status=status.HTTP_200_OK)
+
 
 @api_view(['GET', 'PUT'])
 def event_detail_update(request, event_id):

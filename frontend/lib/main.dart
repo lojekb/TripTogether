@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:trip_together/api_service.dart';
+import 'screens/create_event_screen.dart'; // Importujemy nowy ekran formularza
 
 void main() {
   runApp(const MainApp());
@@ -56,6 +57,17 @@ class _EventScreenState extends State<EventScreen> {
                 );
               },
             ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () async {
+          await Navigator.push(
+            context,
+            MaterialPageRoute(builder: (context) => const CreateEventScreen()),
+          );
+          // Odświeżenie listy po powrocie z ekranu tworzenia
+          _fetchEvents();
+        },
+        child: const Icon(Icons.add),
+      ),
     );
   }
 }

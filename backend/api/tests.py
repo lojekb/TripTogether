@@ -13,8 +13,19 @@ class AllApiTests(APITestCase):
         self.assertEqual(self.client.get('/api/v1/users/me/').status_code, status.HTTP_200_OK)
 
     def test_events_and_invites(self):
+        # Tworzymy użytkownika na potrzeby autoryzacji/przypisania
+        User.objects.create_user(email='test_all_api@example.com', username='test', password='password123')
+        
         self.assertEqual(self.client.get('/api/v1/events/').status_code, status.HTTP_200_OK)
-        self.assertEqual(self.client.post('/api/v1/events/').status_code, status.HTTP_201_CREATED)
+        
+        event_data = {
+            "title": "Wycieczka Testowa",
+            "destination_city": "Kraków",
+            "destination_country": "Polska",
+            "start_date": "2024-12-01",
+            "end_date": "2024-12-05",
+        }
+        self.assertEqual(self.client.post('/api/v1/events/', event_data, format='json').status_code, status.HTTP_201_CREATED)
         self.assertEqual(self.client.get('/api/v1/events/e-1/').status_code, status.HTTP_200_OK)
         self.assertEqual(self.client.post('/api/v1/events/e-1/invitations/').status_code, status.HTTP_201_CREATED)
         self.assertEqual(self.client.post('/api/v1/invitations/t-1/join/').status_code, status.HTTP_200_OK)
@@ -211,3 +222,51 @@ class MembershipModelTests(TestCase):
         m = Membership.objects.create(user=self.member, event=self.event, role=Membership.Role.MEMBER)
         self.assertIn('member@example.com', str(m))
         self.assertIn('Group Trip', str(m))
+
+
+class EventCreateTests(APITestCase):
+    def setUp(self):
+        # Tworzymy testowego użytkownika
+        self.user = User.objects.create_user(
+            email='testuser@example.com',
+            username='testuser',
+            password='testpassword123'
+        )
+        self.url = '/api/v1/events/' 
+
+    def test_create_event_success(self):
+        """Test pomyślnego utworzenia wydarzenia z prawidłowymi danymi"""
+        from api.models import Event
+        data = {
+            "title": "Wycieczka w Tatry",
+            "destination_city": "Zakopane",
+            "destination_country": "Polska",
+            "start_date": "2024-08-01",
+            "end_date": "2024-08-07",
+            "description": "Górskie wędrówki i oscypki",
+            "max_members": 5
+        }
+        response = self.client.post(self.url, data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(Event.objects.filter(title="Wycieczka w Tatry").exists())
+
+    def test_create_event_invalid_dates(self):
+        """Test walidacji: data startowa późniejsza niż końcowa"""
+        data = {
+            "title": "Błędne daty",
+            "destination_city": "Zakopane",
+            "destination_country": "Polska",
+            "start_date": "2024-08-10",
+            "end_date": "2024-08-01",  # Błąd!
+        }
+        response = self.client.post(self.url, data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('end_date', response.data) 
+
+    def test_create_event_missing_required_fields(self):
+        """Test walidacji: brak wymaganych pól, takich jak miasto"""
+        data = {"title": "Tylko Tytuł"}
+        response = self.client.post(self.url, data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('destination_city', response.data)
+        self.assertIn('start_date', response.data)

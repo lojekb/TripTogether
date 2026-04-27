@@ -329,6 +329,125 @@ class EventCreateMembershipTests(APITestCase):
         self.assertEqual(m.role, self.Membership.Role.OWNER)
 
 
+class InvitationGenerateTests(APITestCase):
+    def setUp(self):
+        from api.models import Event, Membership
+        self.owner = User.objects.create_user(email='inv_owner@x.com', username='invowner', password='Pass!')
+        self.outsider = User.objects.create_user(email='inv_out@x.com', username='invout', password='Pass!')
+        self.event = Event.objects.create(
+            title='Invite Trip', destination_city='Łódź', destination_country='Poland',
+            start_date='2026-09-01', end_date='2026-09-05', created_by=self.owner,
+        )
+        Membership.objects.create(user=self.owner, event=self.event, role=Membership.Role.OWNER)
+
+    def test_generate_requires_auth(self):
+        resp = self.client.post(f'/api/v1/events/{self.event.id}/invitations/')
+        self.assertEqual(resp.status_code, 401)
+
+    def test_generate_returns_token(self):
+        self.client.force_authenticate(user=self.owner)
+        resp = self.client.post(f'/api/v1/events/{self.event.id}/invitations/')
+        self.assertEqual(resp.status_code, 201)
+        self.assertIn('token', resp.data)
+
+    def test_generate_requires_membership(self):
+        self.client.force_authenticate(user=self.outsider)
+        resp = self.client.post(f'/api/v1/events/{self.event.id}/invitations/')
+        self.assertEqual(resp.status_code, 403)
+
+    def test_generate_tokens_are_unique(self):
+        self.client.force_authenticate(user=self.owner)
+        token_a = self.client.post(f'/api/v1/events/{self.event.id}/invitations/').data['token']
+        token_b = self.client.post(f'/api/v1/events/{self.event.id}/invitations/').data['token']
+        self.assertNotEqual(token_a, token_b)
+
+
+class InvitationPreviewTests(APITestCase):
+    def setUp(self):
+        from api.models import Event, Membership, Invitation
+        self.owner = User.objects.create_user(email='prev_owner@x.com', username='prevowner', password='Pass!')
+        self.event = Event.objects.create(
+            title='Preview Trip', destination_city='Poznań', destination_country='Poland',
+            start_date='2026-10-01', end_date='2026-10-05', created_by=self.owner,
+        )
+        Membership.objects.create(user=self.owner, event=self.event, role=Membership.Role.OWNER)
+        self.invitation = Invitation.objects.create(event=self.event, inviter=self.owner)
+
+    def test_preview_valid_token_returns_event_data(self):
+        resp = self.client.get(f'/api/v1/invitations/{self.invitation.token}/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('event', resp.data)
+        self.assertEqual(resp.data['event']['title'], 'Preview Trip')
+        self.assertIn('inviter', resp.data)
+
+    def test_preview_invalid_token_returns_404(self):
+        resp = self.client.get('/api/v1/invitations/00000000-0000-0000-0000-000000000000/')
+        self.assertEqual(resp.status_code, 404)
+
+    def test_preview_expired_token_returns_410(self):
+        from api.models import Invitation
+        from django.utils import timezone
+        from datetime import timedelta
+        expired = Invitation.objects.create(event=self.event, inviter=self.owner)
+        expired.expires_at = timezone.now() - timedelta(hours=1)
+        expired.save()
+        resp = self.client.get(f'/api/v1/invitations/{expired.token}/')
+        self.assertEqual(resp.status_code, 410)
+
+
+class JoinEventTests(APITestCase):
+    def setUp(self):
+        from api.models import Event, Membership, Invitation
+        self.Membership = Membership
+        self.owner = User.objects.create_user(email='join_owner@x.com', username='joinowner', password='Pass!')
+        self.joiner = User.objects.create_user(email='join_user@x.com', username='joinuser', password='Pass!')
+        self.event = Event.objects.create(
+            title='Join Trip', destination_city='Katowice', destination_country='Poland',
+            start_date='2026-11-01', end_date='2026-11-05', created_by=self.owner,
+        )
+        Membership.objects.create(user=self.owner, event=self.event, role=Membership.Role.OWNER)
+        self.invitation = Invitation.objects.create(event=self.event, inviter=self.owner)
+
+    def test_join_requires_auth(self):
+        resp = self.client.post(f'/api/v1/invitations/{self.invitation.token}/join/')
+        self.assertEqual(resp.status_code, 401)
+
+    def test_join_creates_membership(self):
+        self.client.force_authenticate(user=self.joiner)
+        resp = self.client.post(f'/api/v1/invitations/{self.invitation.token}/join/')
+        self.assertEqual(resp.status_code, 201)
+        self.assertTrue(self.Membership.objects.filter(user=self.joiner, event=self.event).exists())
+
+    def test_join_sets_member_role(self):
+        self.client.force_authenticate(user=self.joiner)
+        self.client.post(f'/api/v1/invitations/{self.invitation.token}/join/')
+        m = self.Membership.objects.get(user=self.joiner, event=self.event)
+        self.assertEqual(m.role, self.Membership.Role.MEMBER)
+
+    def test_join_sets_invited_by(self):
+        self.client.force_authenticate(user=self.joiner)
+        self.client.post(f'/api/v1/invitations/{self.invitation.token}/join/')
+        m = self.Membership.objects.get(user=self.joiner, event=self.event)
+        self.assertEqual(m.invited_by, self.owner)
+
+    def test_join_expired_token_returns_410(self):
+        from api.models import Invitation
+        from django.utils import timezone
+        from datetime import timedelta
+        expired = Invitation.objects.create(event=self.event, inviter=self.owner)
+        expired.expires_at = timezone.now() - timedelta(hours=1)
+        expired.save()
+        self.client.force_authenticate(user=self.joiner)
+        resp = self.client.post(f'/api/v1/invitations/{expired.token}/join/')
+        self.assertEqual(resp.status_code, 410)
+
+    def test_join_duplicate_returns_409(self):
+        self.client.force_authenticate(user=self.joiner)
+        self.client.post(f'/api/v1/invitations/{self.invitation.token}/join/')
+        resp = self.client.post(f'/api/v1/invitations/{self.invitation.token}/join/')
+        self.assertEqual(resp.status_code, 409)
+
+
 class EventCreateTests(APITestCase):
     def setUp(self):
         # Tworzymy testowego użytkownika

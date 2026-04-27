@@ -1,8 +1,10 @@
+from django.contrib.auth import authenticate
+from rest_framework.authtoken.models import Token
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status, generics, permissions
 
-from .models import Event, User
+from .models import Event, User, Membership
 from .serializers import EventSerializer, UserRegistrationSerializer
 
 # 1. AUTH & USERS
@@ -32,7 +34,16 @@ def register_user(request):
 
 @api_view(['POST'])
 def login_user(request):
-    return Response({"token": "mock.jwt.token"}, status=status.HTTP_200_OK)
+    email = request.data.get('email', '')
+    password = request.data.get('password', '')
+    user = authenticate(request, username=email, password=password)
+    if user is None:
+        return Response({"detail": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED)
+    token, _ = Token.objects.get_or_create(user=user)
+    return Response({
+        "token": token.key,
+        "user": {"id": user.id, "email": user.email, "username": user.username},
+    }, status=status.HTTP_200_OK)
 
 @api_view(['GET', 'PUT'])
 def user_profile(request):
@@ -49,19 +60,18 @@ def user_profile(request):
 # 2. EVENTS
 @api_view(['GET', 'POST'])
 def event_list_create(request):
-    if request.method == 'POST':
-        # Creating an event requires authentication
-        if not request.user or not request.user.is_authenticated:
-            return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+    if not request.user or not request.user.is_authenticated:
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
 
+    if request.method == 'POST':
         serializer = EventSerializer(data=request.data)
         if serializer.is_valid():
-            # Use the authenticated user as creator
-            serializer.save(created_by=request.user)
+            event = serializer.save(created_by=request.user)
+            Membership.objects.create(user=request.user, event=event, role=Membership.Role.OWNER)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        
-    events = Event.objects.all()
+
+    events = Event.objects.filter(memberships__user=request.user)
     serializer = EventSerializer(events, many=True)
     return Response(serializer.data, status=status.HTTP_200_OK)
 

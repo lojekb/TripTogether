@@ -6,6 +6,7 @@ class AuthState extends ChangeNotifier {
   final AuthService authService;
 
   User? currentUser;
+  String? token;
   bool loading = false;
   Map<String, List<String>> fieldErrors = {};
   List<String> nonFieldErrors = [];
@@ -19,8 +20,9 @@ class AuthState extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final user = await authService.login(email: email, password: password);
-      currentUser = user;
+      final result = await authService.login(email: email, password: password);
+      currentUser = result.user;
+      token = result.token;
       loading = false;
       notifyListeners();
       return true;
@@ -37,6 +39,7 @@ class AuthState extends ChangeNotifier {
 
   void logout() {
     currentUser = null;
+    token = null;
     notifyListeners();
   }
 }

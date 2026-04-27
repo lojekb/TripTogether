@@ -11,6 +11,12 @@ class ValidationException implements Exception {
   String toString() => 'ValidationException: $errors';
 }
 
+class LoginResult {
+  final User user;
+  final String token;
+  LoginResult({required this.user, required this.token});
+}
+
 class AuthService {
   final String baseUrl;
   http.Client? _client;
@@ -66,9 +72,7 @@ class AuthService {
     }
   }
 
-  /// Login with email and password. Expects backend at POST {baseUrl}/api/v1/auth/login/
-  /// Returns User on success (HTTP 200). Throws [ValidationException] on 400.
-  Future<User> login({
+  Future<LoginResult> login({
     required String email,
     required String password,
   }) async {
@@ -84,11 +88,12 @@ class AuthService {
 
       if (resp.statusCode == 200 || resp.statusCode == 201) {
         final data = jsonDecode(resp.body);
-        // Response shape may be {"user": {...}} or {...}
         if (data is Map<String, dynamic>) {
-          final Map<String, dynamic> map = data;
-          final userPayload = (map['user'] is Map) ? Map<String, dynamic>.from(map['user'] as Map) : map;
-          return User.fromJson(userPayload);
+          final token = data['token'] as String? ?? '';
+          final userPayload = (data['user'] is Map)
+              ? Map<String, dynamic>.from(data['user'] as Map)
+              : data;
+          return LoginResult(user: User.fromJson(userPayload), token: token);
         }
         throw Exception('Unexpected login response shape');
       }

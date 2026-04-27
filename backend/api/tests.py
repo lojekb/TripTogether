@@ -20,7 +20,7 @@ class AllApiTests(APITestCase):
         User = get_user_model()
         user = User.objects.get(email='test_register@example.com')
         self.client.force_authenticate(user=user)
-        self.assertEqual(self.client.post('/api/v1/auth/login/').status_code, status.HTTP_200_OK)
+        self.assertEqual(self.client.post('/api/v1/auth/login/', {'email': 'test_register@example.com', 'password': 'StrongPass123!'}, format='json').status_code, status.HTTP_200_OK)
         self.assertEqual(self.client.get('/api/v1/users/me/').status_code, status.HTTP_200_OK)
 
     def test_events_and_invites(self):

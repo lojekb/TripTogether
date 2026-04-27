@@ -43,16 +43,21 @@ class _EventScreenState extends State<EventScreen> {
   List<dynamic> _events = [];
 
   @override
-  void initState() {
-    super.initState();
-    _fetchEvents();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final auth = Provider.of<AuthState>(context);
+    if (auth.currentUser != null) {
+      _fetchEvents(auth.token);
+    } else {
+      setState(() => _events = []);
+    }
   }
 
-  void _fetchEvents() async {
-    var events = await _apiService.getEvents();
-    setState(() {
-      _events = events;
-    });
+  void _fetchEvents(String? token) async {
+    final events = await _apiService.getEvents(token: token);
+    if (mounted) {
+      setState(() => _events = events);
+    }
   }
 
   @override
@@ -65,48 +70,74 @@ class _EventScreenState extends State<EventScreen> {
             if (auth.currentUser == null) {
               return Row(
                 children: [
-                  TextButton(
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.white,
+                      foregroundColor: Colors.blue,
+                    ),
                     onPressed: () => Navigator.of(context).pushNamed('/login'),
-                    child: const Text('Login', style: TextStyle(color: Colors.white)),
+                    child: const Text('Login'),
                   ),
-                  TextButton(
+                  const SizedBox(width: 8),
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.white,
+                      foregroundColor: Colors.blue,
+                    ),
                     onPressed: () => Navigator.of(context).pushNamed('/register'),
-                    child: const Text('Register', style: TextStyle(color: Colors.white)),
+                    child: const Text('Register'),
                   ),
                 ],
               );
             }
 
-            return TextButton(
+            return ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.white,
+                foregroundColor: Colors.blue,
+              ),
               onPressed: () {
                 auth.logout();
                 ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Logged out')));
               },
-              child: const Text('Logout', style: TextStyle(color: Colors.white)),
+              child: const Text('Logout'),
             );
           }),
         ],
       ),
-      body: _events.isEmpty
-          ? const Center(child: CircularProgressIndicator())
-          : ListView.builder(
-              itemCount: _events.length,
-              itemBuilder: (context, index) {
-                return ListTile(
-                  leading: const Icon(Icons.flight_takeoff),
-                  title: Text(_events[index]['title']),
-                  subtitle: Text('ID: ${_events[index]['id']}'),
-                );
-              },
-            ),
+      body: Consumer<AuthState>(
+        builder: (context, auth, _) {
+          if (auth.currentUser == null) {
+            return const Center(
+              child: Text(
+                'Zaloguj się, aby zobaczyć swoje wycieczki.',
+                textAlign: TextAlign.center,
+              ),
+            );
+          }
+          if (_events.isEmpty) {
+            return const Center(child: Text('Brak wydarzeń. Utwórz pierwsze!'));
+          }
+          return ListView.builder(
+            itemCount: _events.length,
+            itemBuilder: (context, index) {
+              return ListTile(
+                leading: const Icon(Icons.flight_takeoff),
+                title: Text(_events[index]['title']),
+                subtitle: Text('ID: ${_events[index]['id']}'),
+              );
+            },
+          );
+        },
+      ),
       floatingActionButton: FloatingActionButton(
         onPressed: () async {
+          final auth = Provider.of<AuthState>(context, listen: false);
           await Navigator.push(
             context,
             MaterialPageRoute(builder: (context) => const CreateEventScreen()),
           );
-          // Odświeżenie listy po powrocie z ekranu tworzenia
-          _fetchEvents();
+          if (mounted) _fetchEvents(auth.token);
         },
         child: const Icon(Icons.add),
       ),

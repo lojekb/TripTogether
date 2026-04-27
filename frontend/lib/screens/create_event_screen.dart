@@ -1,8 +1,10 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
-import 'package:flutter/foundation.dart'; 
+import 'package:provider/provider.dart';
+import 'package:trip_together/services/auth_state.dart';
 
 class CreateEventScreen extends StatefulWidget {
   const CreateEventScreen({super.key});
@@ -74,10 +76,15 @@ class _CreateEventScreenState extends State<CreateEventScreen> {
     
     final DateFormat formatter = DateFormat('yyyy-MM-dd');
 
+    final authToken = Provider.of<AuthState>(context, listen: false).token;
+
     try {
       final response = await http.post(
         Uri.parse(apiUrl),
-        headers: {"Content-Type": "application/json"},
+        headers: {
+          "Content-Type": "application/json",
+          if (authToken != null) "Authorization": "Token $authToken",
+        },
         body: jsonEncode({
           "title": _titleController.text,
           "destination_city": _cityController.text,

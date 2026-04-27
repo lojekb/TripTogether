@@ -4,7 +4,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status, generics, permissions
 
-from .models import Event, User, Membership
+from .models import Event, User, Membership, Invitation
 from .serializers import EventSerializer, UserRegistrationSerializer
 
 # 1. AUTH & USERS
@@ -88,12 +88,59 @@ def event_detail_update(request, event_id):
 # 3. INVITATIONS
 @api_view(['POST'])
 def generate_invitation(request, event_id):
-    # Ideally require auth here; keeping public for now
-    return Response({"token": "token-123"}, status=status.HTTP_201_CREATED)
+    if not request.user.is_authenticated:
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+    try:
+        event = Event.objects.get(pk=event_id)
+    except (Event.DoesNotExist, ValueError):
+        return Response({"detail": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
+    if not Membership.objects.filter(user=request.user, event=event).exists():
+        return Response({"detail": "Not a member of this event."}, status=status.HTTP_403_FORBIDDEN)
+    invitation = Invitation.objects.create(event=event, inviter=request.user)
+    return Response({"token": str(invitation.token), "expires_at": invitation.expires_at}, status=status.HTTP_201_CREATED)
+
+@api_view(['GET'])
+def invitation_preview(request, token):
+    try:
+        inv = Invitation.objects.select_related('event', 'inviter').get(token=token)
+    except (Invitation.DoesNotExist, ValueError):
+        return Response({"detail": "Invalid invitation token."}, status=status.HTTP_404_NOT_FOUND)
+    if not inv.is_valid():
+        return Response({"detail": "Invitation has expired."}, status=status.HTTP_410_GONE)
+    event = inv.event
+    return Response({
+        "event": {
+            "id": event.id,
+            "title": event.title,
+            "destination_city": event.destination_city,
+            "destination_country": event.destination_country,
+            "start_date": event.start_date,
+            "end_date": event.end_date,
+            "member_count": event.memberships.count(),
+        },
+        "inviter": inv.inviter.username,
+        "expires_at": inv.expires_at,
+    }, status=status.HTTP_200_OK)
 
 @api_view(['POST'])
 def join_event(request, token):
-    return Response({"message": "Successfully joined"}, status=status.HTTP_200_OK)
+    if not request.user.is_authenticated:
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+    try:
+        inv = Invitation.objects.select_related('event', 'inviter').get(token=token)
+    except (Invitation.DoesNotExist, ValueError):
+        return Response({"detail": "Invalid invitation token."}, status=status.HTTP_404_NOT_FOUND)
+    if not inv.is_valid():
+        return Response({"detail": "Invitation has expired."}, status=status.HTTP_410_GONE)
+    if Membership.objects.filter(user=request.user, event=inv.event).exists():
+        return Response({"detail": "Already a member of this event."}, status=status.HTTP_409_CONFLICT)
+    Membership.objects.create(
+        user=request.user,
+        event=inv.event,
+        role=Membership.Role.MEMBER,
+        invited_by=inv.inviter,
+    )
+    return Response({"message": "Joined successfully."}, status=status.HTTP_201_CREATED)
 
 # 5. ITINERARY
 @api_view(['GET', 'POST'])

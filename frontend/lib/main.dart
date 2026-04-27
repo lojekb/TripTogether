@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:trip_together/api_service.dart';
 import 'package:trip_together/pages/registration_page.dart';
 import 'package:trip_together/pages/login_page.dart';
 import 'package:trip_together/services/auth_state.dart';
 import 'package:trip_together/services/auth_service.dart';
-import 'screens/create_event_screen.dart'; // Importujemy nowy ekran formularza
+import 'screens/create_event_screen.dart';
+import 'screens/invitation_preview_screen.dart';
 
 void main() {
   runApp(const MainApp());
@@ -25,6 +27,15 @@ class MainApp extends StatelessWidget {
           '/': (ctx) => const EventScreen(),
           '/register': (ctx) => const RegistrationPage(baseUrl: 'http://localhost:8000'),
           '/login': (ctx) => const LoginPage(baseUrl: 'http://localhost:8000'),
+        },
+        onGenerateRoute: (settings) {
+          final uri = Uri.parse(settings.name ?? '/');
+          if (uri.pathSegments.length == 2 && uri.pathSegments[0] == 'invite') {
+            return MaterialPageRoute(
+              builder: (_) => InvitationPreviewScreen(token: uri.pathSegments[1]),
+            );
+          }
+          return null;
         },
         initialRoute: '/',
       ),
@@ -51,6 +62,22 @@ class _EventScreenState extends State<EventScreen> {
     } else {
       setState(() => _events = []);
     }
+  }
+
+  Future<void> _shareInvitation(BuildContext context, String eventId) async {
+    final auth = Provider.of<AuthState>(context, listen: false);
+    if (auth.token == null) return;
+    final messenger = ScaffoldMessenger.of(context);
+    final result = await _apiService.generateInvitation(eventId, authToken: auth.token!);
+    if (!mounted) return;
+    if (result == null) {
+      messenger.showSnackBar(const SnackBar(content: Text('Błąd generowania linku.')));
+      return;
+    }
+    final inviteUrl = 'http://localhost:8000/#/invite/${result['token']}';
+    await Clipboard.setData(ClipboardData(text: inviteUrl));
+    if (!mounted) return;
+    messenger.showSnackBar(const SnackBar(content: Text('Link skopiowany!')));
   }
 
   void _fetchEvents(String? token) async {
@@ -121,10 +148,16 @@ class _EventScreenState extends State<EventScreen> {
           return ListView.builder(
             itemCount: _events.length,
             itemBuilder: (context, index) {
+              final event = _events[index];
               return ListTile(
                 leading: const Icon(Icons.flight_takeoff),
-                title: Text(_events[index]['title']),
-                subtitle: Text('ID: ${_events[index]['id']}'),
+                title: Text(event['title']),
+                subtitle: Text('${event['destination_city']}, ${event['destination_country']}'),
+                trailing: IconButton(
+                  icon: const Icon(Icons.share),
+                  tooltip: 'Zaproś',
+                  onPressed: () => _shareInvitation(context, event['id'].toString()),
+                ),
               );
             },
           );

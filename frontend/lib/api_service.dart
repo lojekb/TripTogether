@@ -30,4 +30,45 @@ class ApiService {
       return [];
     }
   }
+
+  Future<Map<String, dynamic>?> generateInvitation(String eventId, {required String authToken}) async {
+    try {
+      final url = Uri.parse('${ApiConstants.baseUrl}/events/$eventId/invitations/');
+      final response = await _client.post(url, headers: {'Authorization': 'Token $authToken'});
+      if (response.statusCode == 201) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      }
+      debugPrint('generateInvitation błąd: ${response.statusCode}');
+      return null;
+    } catch (e) {
+      debugPrint('generateInvitation błąd połączenia: $e');
+      return null;
+    }
+  }
+
+  Future<Map<String, dynamic>?> getInvitation(String token) async {
+    try {
+      final url = Uri.parse('${ApiConstants.baseUrl}/invitations/$token/');
+      final response = await _client.get(url);
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      }
+      debugPrint('getInvitation błąd: ${response.statusCode}');
+      return null;
+    } catch (e) {
+      debugPrint('getInvitation błąd połączenia: $e');
+      return null;
+    }
+  }
+
+  Future<bool> joinEvent(String token, {required String authToken}) async {
+    try {
+      final url = Uri.parse('${ApiConstants.baseUrl}/invitations/$token/join/');
+      final response = await _client.post(url, headers: {'Authorization': 'Token $authToken'});
+      return response.statusCode == 201;
+    } catch (e) {
+      debugPrint('joinEvent błąd połączenia: $e');
+      return false;
+    }
+  }
 }

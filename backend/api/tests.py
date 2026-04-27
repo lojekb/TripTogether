@@ -39,10 +39,18 @@ class AllApiTests(APITestCase):
             "start_date": "2024-12-01",
             "end_date": "2024-12-05",
         }
-        self.assertEqual(self.client.post('/api/v1/events/', event_data, format='json').status_code, status.HTTP_201_CREATED)
-        self.assertEqual(self.client.get('/api/v1/events/e-1/').status_code, status.HTTP_200_OK)
-        self.assertEqual(self.client.post('/api/v1/events/e-1/invitations/').status_code, status.HTTP_201_CREATED)
-        self.assertEqual(self.client.post('/api/v1/invitations/t-1/join/').status_code, status.HTTP_200_OK)
+        event_resp = self.client.post('/api/v1/events/', event_data, format='json')
+        self.assertEqual(event_resp.status_code, status.HTTP_201_CREATED)
+        event_id = event_resp.data['id']
+        self.assertEqual(self.client.get(f'/api/v1/events/{event_id}/').status_code, status.HTTP_200_OK)
+        inv_resp = self.client.post(f'/api/v1/events/{event_id}/invitations/')
+        self.assertEqual(inv_resp.status_code, status.HTTP_201_CREATED)
+        inv_token = inv_resp.data['token']
+        # join as a different user to avoid 409 (owner is already a member)
+        User = get_user_model()
+        other = User.objects.create_user(email='joiner_all@example.com', username='joiner_all', password='pass')
+        self.client.force_authenticate(user=other)
+        self.assertEqual(self.client.post(f'/api/v1/invitations/{inv_token}/join/').status_code, status.HTTP_201_CREATED)
 
     def test_itinerary(self):
         # create and authenticate a user because POST requires auth

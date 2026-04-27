@@ -248,6 +248,87 @@ class MembershipModelTests(TestCase):
         self.assertIn('Group Trip', str(m))
 
 
+class LoginTokenTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email='login_test@example.com', username='loginuser', password='Pass123!'
+        )
+
+    def test_login_with_valid_credentials_returns_token(self):
+        resp = self.client.post('/api/v1/auth/login/', {'email': 'login_test@example.com', 'password': 'Pass123!'}, format='json')
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('token', resp.data)
+
+    def test_login_with_invalid_credentials_returns_401(self):
+        resp = self.client.post('/api/v1/auth/login/', {'email': 'login_test@example.com', 'password': 'wrong'}, format='json')
+        self.assertEqual(resp.status_code, 401)
+
+    def test_login_response_contains_user_data(self):
+        resp = self.client.post('/api/v1/auth/login/', {'email': 'login_test@example.com', 'password': 'Pass123!'}, format='json')
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('user', resp.data)
+        user_data = resp.data['user']
+        self.assertIn('id', user_data)
+        self.assertIn('email', user_data)
+        self.assertIn('username', user_data)
+
+
+class EventListAuthTests(APITestCase):
+    def setUp(self):
+        from api.models import Event, Membership
+        self.user_a = User.objects.create_user(email='event_a@x.com', username='usera', password='Pass!')
+        self.user_b = User.objects.create_user(email='event_b@x.com', username='userb', password='Pass!')
+        self.event = Event.objects.create(
+            title='Trip A', destination_city='Kraków', destination_country='Poland',
+            start_date='2026-06-01', end_date='2026-06-10', created_by=self.user_a
+        )
+        Membership.objects.create(user=self.user_a, event=self.event, role=Membership.Role.OWNER)
+
+    def test_get_events_unauthenticated_returns_401(self):
+        resp = self.client.get('/api/v1/events/')
+        self.assertEqual(resp.status_code, 401)
+
+    def test_get_events_returns_only_events_where_user_is_member(self):
+        self.client.force_authenticate(user=self.user_a)
+        resp = self.client.get('/api/v1/events/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.data), 1)
+        self.assertEqual(resp.data[0]['title'], 'Trip A')
+
+    def test_get_events_does_not_return_other_users_events(self):
+        self.client.force_authenticate(user=self.user_b)
+        resp = self.client.get('/api/v1/events/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.data), 0)
+
+
+class EventCreateMembershipTests(APITestCase):
+    def setUp(self):
+        from api.models import Membership
+        self.Membership = Membership
+        self.user = User.objects.create_user(email='member_test@x.com', username='memberuser', password='Pass!')
+        self.client.force_authenticate(user=self.user)
+
+    def test_create_event_creates_owner_membership(self):
+        resp = self.client.post('/api/v1/events/', {
+            'title': 'New Trip', 'destination_city': 'Gdańsk',
+            'destination_country': 'Poland', 'start_date': '2026-07-01', 'end_date': '2026-07-10'
+        }, format='json')
+        self.assertEqual(resp.status_code, 201)
+        event_id = resp.data['id']
+        self.assertTrue(self.Membership.objects.filter(user=self.user, event_id=event_id).exists())
+
+    def test_created_membership_has_owner_role(self):
+        resp = self.client.post('/api/v1/events/', {
+            'title': 'Owner Trip', 'destination_city': 'Wrocław',
+            'destination_country': 'Poland', 'start_date': '2026-08-01', 'end_date': '2026-08-05'
+        }, format='json')
+        self.assertEqual(resp.status_code, 201)
+        event_id = resp.data['id']
+        m = self.Membership.objects.get(user=self.user, event_id=event_id)
+        self.assertEqual(m.role, self.Membership.Role.OWNER)
+
+
 class EventCreateTests(APITestCase):
     def setUp(self):
         # Tworzymy testowego użytkownika

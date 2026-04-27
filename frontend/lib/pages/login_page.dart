@@ -73,12 +73,19 @@ class _LoginPageState extends State<LoginPage> {
                         FocusScope.of(context).unfocus();
                         final valid = _formKey.currentState?.validate() ?? true;
                         if (!valid) return;
+                        final scaffoldMessenger = ScaffoldMessenger.of(context);
+                        final navigator = Navigator.of(context);
+                        final onLoggedIn = widget.onLoggedIn;
+
                         final ok = await auth.login(email: _emailController.text.trim(), password: _passwordController.text);
+                        if (!mounted) return;
                         if (ok) {
-                          if (!mounted) return;
-                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Logged in')));
-                          if (widget.onLoggedIn != null) widget.onLoggedIn!();
-                          else Navigator.of(context).pushReplacementNamed('/');
+                          scaffoldMessenger.showSnackBar(const SnackBar(content: Text('Logged in')));
+                          if (onLoggedIn != null) {
+                            onLoggedIn();
+                          } else {
+                            navigator.pushReplacementNamed('/');
+                          }
                         }
                       },
                 child: auth.loading ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Login'),

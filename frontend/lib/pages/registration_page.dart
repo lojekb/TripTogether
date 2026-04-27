@@ -168,7 +168,7 @@ class _RegistrationPageState extends State<RegistrationPage> {
                   if (model.nonFieldErrors.isNotEmpty)
                     ...model.nonFieldErrors.map((e) => Text(e, style: const TextStyle(color: Colors.red))),
                   ElevatedButton(
-                    onPressed: model.loading
+                    onPressed: model.loading || !_isFormValid()
                         ? null
                         : () async {
                             FocusScope.of(context).unfocus();
@@ -178,30 +178,32 @@ class _RegistrationPageState extends State<RegistrationPage> {
                               return;
                             }
 
+                            final scaffoldMessenger = ScaffoldMessenger.of(context);
+                            final navigator = Navigator.of(context);
+                            final onRegistered = widget.onRegistered;
+
                             final ok = await model.register(
                               email: _emailController.text.trim(),
                               username: _usernameController.text.trim(),
                               password: _passwordController.text,
                               passwordConfirm: _passwordConfirmController.text,
                             );
-
+                            if (!mounted) return;
                             if (ok) {
-                              if (!mounted) return;
-                              ScaffoldMessenger.of(context).showSnackBar(
+                              scaffoldMessenger.showSnackBar(
                                 const SnackBar(content: Text('Registration successful')),
                               );
-                              if (widget.onRegistered != null) {
-                                widget.onRegistered!();
+                              if (onRegistered != null) {
+                                onRegistered();
                               } else {
                                 // default behavior: navigate to '/login'
-                                Navigator.of(context).pushReplacementNamed('/login');
+                                navigator.pushReplacementNamed('/login');
                               }
                             } else {
-                              if (!mounted) return;
                               if (model.fieldErrors.isNotEmpty) {
                                 // show field errors inline; already bound to fields via errorText
                                 // show top-level snackbar for visibility
-                                ScaffoldMessenger.of(context).showSnackBar(
+                                scaffoldMessenger.showSnackBar(
                                   const SnackBar(content: Text('Please fix the errors in the form')),
                                 );
                               }

@@ -13,9 +13,11 @@ class ValidationException implements Exception {
 
 class AuthService {
   final String baseUrl;
-  final http.Client _client;
+  http.Client? _client;
 
-  AuthService({required this.baseUrl, http.Client? client}) : _client = client ?? http.Client();
+  AuthService({required this.baseUrl, http.Client? client}) : _client = client;
+
+  http.Client get _httpClient => _client ??= http.Client();
 
   /// Register a user. On success returns [User]. On validation errors throws [ValidationException].
   Future<User> register({
@@ -33,7 +35,7 @@ class AuthService {
     });
 
     try {
-      final resp = await _client.post(
+      final resp = await _httpClient.post(
         url,
         headers: {'Content-Type': 'application/json'},
         body: body,
@@ -74,7 +76,7 @@ class AuthService {
     final body = jsonEncode({'email': email, 'password': password});
 
     try {
-      final resp = await _client.post(
+      final resp = await _httpClient.post(
         url,
         headers: {'Content-Type': 'application/json'},
         body: body,

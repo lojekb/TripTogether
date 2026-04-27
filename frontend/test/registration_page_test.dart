@@ -10,7 +10,7 @@ class TestAuthService extends AuthService {
   final bool shouldFail;
   final Map<String, List<String>> errors;
 
-  TestAuthService({String baseUrl = 'http://test', this.onRegister, this.shouldFail = false, this.errors = const {}}) : super(baseUrl: baseUrl);
+  TestAuthService({super.baseUrl = 'http://test', this.onRegister, this.shouldFail = false, this.errors = const {}});
 
   @override
   Future<User> register({required String email, required String username, required String password, required String passwordConfirm}) async {

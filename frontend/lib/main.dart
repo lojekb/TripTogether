@@ -67,16 +67,17 @@ class _EventScreenState extends State<EventScreen> {
   Future<void> _shareInvitation(BuildContext context, String eventId) async {
     final auth = Provider.of<AuthState>(context, listen: false);
     if (auth.token == null) return;
+    final messenger = ScaffoldMessenger.of(context);
     final result = await _apiService.generateInvitation(eventId, authToken: auth.token!);
     if (!mounted) return;
     if (result == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Błąd generowania linku.')));
+      messenger.showSnackBar(const SnackBar(content: Text('Błąd generowania linku.')));
       return;
     }
     final inviteUrl = 'http://localhost:8000/#/invite/${result['token']}';
     await Clipboard.setData(ClipboardData(text: inviteUrl));
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Link skopiowany!')));
+    messenger.showSnackBar(const SnackBar(content: Text('Link skopiowany!')));
   }
 
   void _fetchEvents(String? token) async {

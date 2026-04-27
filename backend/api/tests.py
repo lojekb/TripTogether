@@ -8,14 +8,28 @@ from rest_framework import status
 
 class AllApiTests(APITestCase):
     def test_users(self):
-        self.assertEqual(self.client.post('/api/v1/auth/register/').status_code, status.HTTP_201_CREATED)
+        register_data = {
+            "email": "test_register@example.com",
+            "username": "test_register",
+            "password": "StrongPass123!",
+            "password_confirm": "StrongPass123!",
+        }
+        response = self.client.post('/api/v1/auth/register/', register_data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        # login and profile endpoints still mocked - profile now requires auth, so authenticate client
+        User = get_user_model()
+        user = User.objects.get(email='test_register@example.com')
+        self.client.force_authenticate(user=user)
         self.assertEqual(self.client.post('/api/v1/auth/login/').status_code, status.HTTP_200_OK)
         self.assertEqual(self.client.get('/api/v1/users/me/').status_code, status.HTTP_200_OK)
 
     def test_events_and_invites(self):
         # Tworzymy użytkownika na potrzeby autoryzacji/przypisania
-        User.objects.create_user(email='test_all_api@example.com', username='test', password='password123')
-        
+        User = get_user_model()
+        user = User.objects.create_user(email='test_all_api@example.com', username='test', password='password123')
+        # authenticate client for endpoints that require auth
+        self.client.force_authenticate(user=user)
+
         self.assertEqual(self.client.get('/api/v1/events/').status_code, status.HTTP_200_OK)
         
         event_data = {
@@ -31,11 +45,21 @@ class AllApiTests(APITestCase):
         self.assertEqual(self.client.post('/api/v1/invitations/t-1/join/').status_code, status.HTTP_200_OK)
 
     def test_itinerary(self):
+        # create and authenticate a user because POST requires auth
+        User = get_user_model()
+        user = User.objects.create_user(email='it_user@example.com', username='ituser', password='password')
+        self.client.force_authenticate(user=user)
+
         self.assertEqual(self.client.get('/api/v1/events/e-1/itinerary/').status_code, status.HTTP_200_OK)
         self.assertEqual(self.client.post('/api/v1/events/e-1/itinerary/').status_code, status.HTTP_201_CREATED)
         self.assertEqual(self.client.delete('/api/v1/events/e-1/itinerary/i-1/').status_code, status.HTTP_204_NO_CONTENT)
 
     def test_polls_and_chat(self):
+        # authenticate because poll endpoints require auth
+        User = get_user_model()
+        user = User.objects.create_user(email='poll_user@example.com', username='poller', password='password')
+        self.client.force_authenticate(user=user)
+
         self.assertEqual(self.client.post('/api/v1/events/e-1/polls/').status_code, status.HTTP_201_CREATED)
         self.assertEqual(self.client.post('/api/v1/events/e-1/polls/p-1/options/').status_code, status.HTTP_201_CREATED)
         self.assertEqual(self.client.post('/api/v1/events/e-1/polls/p-1/vote/').status_code, status.HTTP_200_OK)
@@ -232,7 +256,9 @@ class EventCreateTests(APITestCase):
             username='testuser',
             password='testpassword123'
         )
-        self.url = '/api/v1/events/' 
+        # authenticate the test client for endpoints that require auth
+        self.client.force_authenticate(user=self.user)
+        self.url = '/api/v1/events/'
 
     def test_create_event_success(self):
         """Test pomyślnego utworzenia wydarzenia z prawidłowymi danymi"""
@@ -270,3 +296,4 @@ class EventCreateTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('destination_city', response.data)
         self.assertIn('start_date', response.data)
+

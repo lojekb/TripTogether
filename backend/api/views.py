@@ -1,15 +1,34 @@
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
-from rest_framework import status
-import uuid
+from rest_framework import status, generics, permissions
 
 from .models import Event, User
-from .serializers import EventSerializer
+from .serializers import EventSerializer, UserRegistrationSerializer
 
-# 1. AUTORYZACJA I UŻYTKOWNICY
+# 1. AUTH & USERS
+class RegistrationView(generics.CreateAPIView):
+    serializer_class = UserRegistrationSerializer
+    permission_classes = [permissions.AllowAny]
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        data = {
+            "id": user.id,
+            "email": user.email,
+            "username": user.username,
+        }
+        return Response(data, status=status.HTTP_201_CREATED)
+
 @api_view(['POST'])
 def register_user(request):
-    return Response({"message": "Zarejestrowano", "userId": str(uuid.uuid4())}, status=status.HTTP_201_CREATED)
+    serializer = UserRegistrationSerializer(data=request.data)
+    if serializer.is_valid():
+        user = serializer.save()
+        data = {"id": user.id, "email": user.email, "username": user.username}
+        return Response(data, status=status.HTTP_201_CREATED)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 @api_view(['POST'])
 def login_user(request):
@@ -17,20 +36,28 @@ def login_user(request):
 
 @api_view(['GET', 'PUT'])
 def user_profile(request):
-    if request.method == 'GET':
-        return Response({"id": "u-1", "name": "Jan", "email": "jan@test.com"}, status=status.HTTP_200_OK)
-    return Response({"message": "Zaktualizowano profil"}, status=status.HTTP_200_OK)
+    # Require authentication to view or update profile
+    if not request.user or not request.user.is_authenticated:
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
 
-# 2. WYDARZENIA
+    if request.method == 'GET':
+        user = request.user
+        return Response({"id": user.id, "email": user.email, "username": user.username}, status=status.HTTP_200_OK)
+    # For PUT: here we just return a success message (update logic not implemented)
+    return Response({"message": "Profile updated"}, status=status.HTTP_200_OK)
+
+# 2. EVENTS
 @api_view(['GET', 'POST'])
 def event_list_create(request):
     if request.method == 'POST':
+        # Creating an event requires authentication
+        if not request.user or not request.user.is_authenticated:
+            return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+
         serializer = EventSerializer(data=request.data)
         if serializer.is_valid():
-            user = User.objects.first()
-            if not user:
-                return Response({"error": "Brak użytkowników w bazie. Utwórz użytkownika."}, status=status.HTTP_400_BAD_REQUEST)
-            serializer.save(created_by=user)
+            # Use the authenticated user as creator
+            serializer.save(created_by=request.user)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         
@@ -42,49 +69,68 @@ def event_list_create(request):
 @api_view(['GET', 'PUT'])
 def event_detail_update(request, event_id):
     if request.method == 'GET':
-        return Response({"id": event_id, "title": "Majówka w Rzymie", "city": "Rome"}, status=status.HTTP_200_OK)
-    return Response({"message": "Zaktualizowano wydarzenie"}, status=status.HTTP_200_OK)
+        return Response({"id": event_id, "title": "May trip to Rome", "city": "Rome"}, status=status.HTTP_200_OK)
+    # PUT should require authentication
+    if not request.user or not request.user.is_authenticated:
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+    return Response({"message": "Event updated"}, status=status.HTTP_200_OK)
 
-# 3. ZAPROSZENIA
+# 3. INVITATIONS
 @api_view(['POST'])
 def generate_invitation(request, event_id):
+    # Ideally require auth here; keeping public for now
     return Response({"token": "token-123"}, status=status.HTTP_201_CREATED)
 
 @api_view(['POST'])
 def join_event(request, token):
-    return Response({"message": "Dołączono pomyślnie"}, status=status.HTTP_200_OK)
+    return Response({"message": "Successfully joined"}, status=status.HTTP_200_OK)
 
-# 5. PLAN PODRÓŻY
+# 5. ITINERARY
 @api_view(['GET', 'POST'])
 def itinerary_list_create(request, event_id):
     if request.method == 'POST':
+        # require auth to modify itinerary
+        if not request.user or not request.user.is_authenticated:
+            return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
         return Response({"id": "item-123", "type": "HOTEL"}, status=status.HTTP_201_CREATED)
     return Response([{"id": "item-1", "type": "FLIGHT"}], status=status.HTTP_200_OK)
 
 @api_view(['DELETE'])
 def itinerary_delete(request, event_id, item_id):
-    return Response({"message": "Usunięto pozycję"}, status=status.HTTP_204_NO_CONTENT)
+    if not request.user or not request.user.is_authenticated:
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+    return Response({"message": "Item deleted"}, status=status.HTTP_204_NO_CONTENT)
 
-# 6. ANKIETY
+# 6. POLLS
 @api_view(['POST'])
 def poll_create(request, event_id):
-    return Response({"id": "poll-1", "question": "Czym jedziemy?"}, status=status.HTTP_201_CREATED)
+    if not request.user or not request.user.is_authenticated:
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+    return Response({"id": "poll-1", "question": "How are we traveling?"}, status=status.HTTP_201_CREATED)
 
 @api_view(['POST'])
 def poll_option_create(request, event_id, poll_id):
-    return Response({"id": "opt-1", "text": "Pociąg"}, status=status.HTTP_201_CREATED)
+    if not request.user or not request.user.is_authenticated:
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+    return Response({"id": "opt-1", "text": "Train"}, status=status.HTTP_201_CREATED)
 
 @api_view(['POST'])
 def poll_vote(request, event_id, poll_id):
-    return Response({"message": "Głos zapisany"}, status=status.HTTP_200_OK)
+    if not request.user or not request.user.is_authenticated:
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+    return Response({"message": "Vote recorded"}, status=status.HTTP_200_OK)
 
 @api_view(['PUT'])
 def poll_close(request, event_id, poll_id):
-    return Response({"message": "Ankieta zamknięta"}, status=status.HTTP_200_OK)
+    if not request.user or not request.user.is_authenticated:
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+    return Response({"message": "Poll closed"}, status=status.HTTP_200_OK)
 
-# 7. CZAT
+# 7. CHAT
 @api_view(['GET', 'POST'])
 def chat_messages(request, event_id):
     if request.method == 'POST':
-        return Response({"id": "msg-1", "text": "Hej"}, status=status.HTTP_201_CREATED)
-    return Response([{"id": "msg-001", "text": "Cześć!"}], status=status.HTTP_200_OK)
+        if not request.user or not request.user.is_authenticated:
+            return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({"id": "msg-1", "text": "Hey"}, status=status.HTTP_201_CREATED)
+    return Response([{"id": "msg-001", "text": "Hello!"}], status=status.HTTP_200_OK)

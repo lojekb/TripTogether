@@ -92,6 +92,7 @@ class _CreateEventScreenState extends State<CreateEventScreen> {
           "description": _descriptionController.text,
           "start_date": formatter.format(_startDate!),
           "end_date": formatter.format(_endDate!),
+          if (_budgetController.text.isNotEmpty) "budget": _budgetController.text,
         }),
       );
 

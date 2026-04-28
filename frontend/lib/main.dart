@@ -7,7 +7,7 @@ import 'package:trip_together/pages/login_page.dart';
 import 'package:trip_together/services/auth_state.dart';
 import 'package:trip_together/services/auth_service.dart';
 import 'screens/create_event_screen.dart';
-import 'screens/invitation_preview_screen.dart';
+import 'screens/invite_screen.dart';
 
 void main() {
   runApp(const MainApp());
@@ -30,9 +30,10 @@ class MainApp extends StatelessWidget {
         },
         onGenerateRoute: (settings) {
           final uri = Uri.parse(settings.name ?? '/');
-          if (uri.pathSegments.length == 2 && uri.pathSegments[0] == 'invite') {
+          if (uri.pathSegments.length >= 2 && uri.pathSegments[0] == 'invite') {
+            final autoJoin = uri.queryParameters['autoJoin'] == 'true';
             return MaterialPageRoute(
-              builder: (_) => InvitationPreviewScreen(token: uri.pathSegments[1]),
+              builder: (_) => InviteScreen(token: uri.pathSegments[1], autoJoin: autoJoin),
             );
           }
           return null;
@@ -59,6 +60,16 @@ class _EventScreenState extends State<EventScreen> {
     final auth = Provider.of<AuthState>(context);
     if (auth.currentUser != null) {
       _fetchEvents(auth.token);
+
+      // Automatyczne dołączanie, jeśli użytkownik wrócił na stronę główną po logowaniu
+      if (pendingInviteToken != null) {
+        final token = pendingInviteToken;
+        pendingInviteToken = null;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          Navigator.of(context).pushNamed('/invite/$token?autoJoin=true');
+        });
+      }
+
     } else {
       setState(() => _events = []);
     }
@@ -74,7 +85,7 @@ class _EventScreenState extends State<EventScreen> {
       messenger.showSnackBar(const SnackBar(content: Text('Błąd generowania linku.')));
       return;
     }
-    final inviteUrl = 'http://localhost:8000/#/invite/${result['token']}';
+    final inviteUrl = '${Uri.base.origin}/#/invite/${result['token']}';
     await Clipboard.setData(ClipboardData(text: inviteUrl));
     if (!mounted) return;
     messenger.showSnackBar(const SnackBar(content: Text('Link skopiowany!')));

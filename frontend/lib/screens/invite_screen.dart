@@ -51,10 +51,6 @@ class _InviteScreenState extends State<InviteScreen> {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
 
-        // DEBUG: Sprawdźmy, co faktycznie dostajemy z API
-        print('Otrzymane dane z API: $data');
-        print('Typ dla klucza "inviter": ${data['inviter'].runtimeType}');
-
         setState(() {
           _eventData = data['event'];
           _inviterName = data['inviter'];

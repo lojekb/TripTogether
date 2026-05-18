@@ -1,5 +1,11 @@
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:http/http.dart' as http;
+import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:trip_together/services/auth_state.dart';
 
 class EventDetailsScreen extends StatelessWidget {
   final Map<String, dynamic> event;
@@ -24,13 +30,16 @@ class EventDetailsScreen extends StatelessWidget {
             ],
           ),
         ),
-        body: const TabBarView(
+        body: TabBarView(
           children: [
-            TransportSearchView(),
-            AccommodationSearchView(),
-            AttractionsSearchView(),
-            Center(child: Text('Zaakceptowany plan')),
-            Center(child: Text('Czat wydarzenia')),
+            const TransportSearchView(),
+            const AccommodationSearchView(),
+            AttractionsSearchView(
+              eventId: event['id'].toString(),
+              initialCity: event['destination_city'] ?? '',
+            ),
+            const Center(child: Text('Zaakceptowany plan')),
+            const Center(child: Text('Czat wydarzenia')),
           ],
         ),
       ),
@@ -184,32 +193,279 @@ class _AccommodationSearchViewState extends State<AccommodationSearchView> {
   }
 }
 
-class AttractionsSearchView extends StatelessWidget {
-  const AttractionsSearchView({super.key});
+class AttractionsSearchView extends StatefulWidget {
+  final String eventId;
+  final String initialCity;
+
+  const AttractionsSearchView({
+    super.key,
+    required this.eventId,
+    required this.initialCity,
+  });
 
   @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(16.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const TextField(
-            decoration: InputDecoration(
-              labelText: 'Miasto/miejsce',
-              border: OutlineInputBorder(),
-            ),
+  State<AttractionsSearchView> createState() => _AttractionsSearchViewState();
+}
+
+class _AttractionsSearchViewState extends State<AttractionsSearchView> {
+  late TextEditingController _cityController;
+  List<dynamic> _attractions = [];
+  bool _isLoading = false;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    _cityController = TextEditingController(text: widget.initialCity);
+    if (widget.initialCity.isNotEmpty) {
+      _searchAttractions();
+    }
+  }
+
+  @override
+  void dispose() {
+    _cityController.dispose();
+    super.dispose();
+  }
+
+  String get _baseUrl {
+    return kIsWeb ? 'http://127.0.0.1:8000' : 'http://10.0.2.2:8000';
+  }
+
+  String _formatKinds(String kinds) {
+    if (kinds.isEmpty) return '';
+    return kinds.split(',').map((k) {
+      final clean = k.trim().replaceAll('_', ' ');
+      if (clean.isEmpty) return '';
+      return clean[0].toUpperCase() + clean.substring(1);
+    }).where((k) => k.isNotEmpty).take(3).join(' • ');
+  }
+
+  Future<void> _searchAttractions() async {
+    final city = _cityController.text.trim();
+    if (city.isEmpty) return;
+
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+      _attractions = [];
+    });
+
+    final authState = Provider.of<AuthState>(context, listen: false);
+
+    try {
+      final response = await http.get(
+        Uri.parse('$_baseUrl/api/v1/attractions/search/?city=$city'),
+        headers: {
+          if (authState.token != null) "Authorization": "Token ${authState.token}",
+        },
+      );
+
+      if (!mounted) return;
+
+      if (response.statusCode == 200) {
+        final decoded = jsonDecode(response.body);
+        
+        List<dynamic> results = [];
+        if (decoded is List) {
+          results = decoded;
+        } else if (decoded is Map) {
+          if (decoded.containsKey('data')) {
+            results = decoded['data'];
+          } else if (decoded.containsKey('features')) {
+            results = decoded['features'];
+          } else if (decoded.containsKey('results')) {
+            results = decoded['results'];
+          }
+        }
+
+        setState(() {
+          _attractions = results;
+          if (_attractions.isEmpty) {
+            _errorMessage = 'Brak wyników dla tego miasta.';
+          }
+        });
+      } else {
+        setState(() {
+          _errorMessage = 'Błąd podczas wyszukiwania: ${response.statusCode}';
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = 'Błąd połączenia: $e';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _addToItinerary(dynamic attraction) async {
+    final authState = Provider.of<AuthState>(context, listen: false);
+    
+    final String title = attraction['name'] ?? attraction['title'] ?? 'Nieznana atrakcja';
+    final double? lat = attraction['lat'] != null ? (attraction['lat'] as num).toDouble() : null;
+    final dynamic rawLon = attraction['lon'] ?? attraction['lng'];
+    final double? lon = rawLon != null ? (rawLon as num).toDouble() : null;
+
+    try {
+      final response = await http.post(
+        Uri.parse('$_baseUrl/api/v1/events/${widget.eventId}/itinerary/'),
+        headers: {
+          "Content-Type": "application/json",
+          if (authState.token != null) "Authorization": "Token ${authState.token}",
+        },
+        body: jsonEncode({
+          "title": title,
+          "item_type": "ATTRACTION",
+          "location_lat": lat,
+          "location_lon": lon,
+        }),
+      );
+
+      if (!mounted) return;
+
+      if (response.statusCode == 201) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Dodano "$title" do planu podróży!')),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Błąd dodawania: ${response.body}')),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Błąd połączenia: $e')),
+      );
+    }
+  }
+
+  void _showAttractionDetails(dynamic attraction) {
+    final String title = attraction['name'] ?? attraction['title'] ?? 'Nieznana atrakcja';
+    final String rawKinds = attraction['kinds'] ?? '';
+    final String tags = rawKinds.isNotEmpty ? _formatKinds(rawKinds) : 'Brak tagów';
+    final double? lat = attraction['lat'] != null ? (attraction['lat'] as num).toDouble() : null;
+    final dynamic rawLon = attraction['lon'] ?? attraction['lng'];
+    final double? lon = rawLon != null ? (rawLon as num).toDouble() : null;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Kategorie:', style: TextStyle(fontWeight: FontWeight.bold)),
+            Text(tags),
+            const SizedBox(height: 8),
+            if (lat != null && lon != null)
+              Text('Współrzędne:\n$lat, $lon'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Zamknij'),
           ),
-          const SizedBox(height: 24),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              onPressed: () {},
-              child: const Text('Szukaj atrakcji'),
-            ),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.search),
+            label: const Text('Szukaj w Google'),
+            onPressed: () async {
+              final query = Uri.encodeComponent('$title atrakcja');
+              final url = Uri.parse('https://www.google.com/search?q=$query');
+              if (await canLaunchUrl(url)) {
+                await launchUrl(url, mode: LaunchMode.externalApplication);
+              } else {
+                if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Nie można otworzyć linku.')));
+              }
+            },
           ),
         ],
       ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _cityController,
+                  decoration: const InputDecoration(
+                    labelText: 'Miasto',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.location_city),
+                  ),
+                  onSubmitted: (_) => _searchAttractions(),
+                ),
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton(
+                onPressed: _searchAttractions,
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                ),
+                child: const Text('Szukaj'),
+              ),
+            ],
+          ),
+        ),
+        if (_isLoading)
+          const Expanded(child: Center(child: CircularProgressIndicator())),
+        if (!_isLoading && _errorMessage != null)
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Text(
+              _errorMessage!,
+              style: const TextStyle(color: Colors.red, fontSize: 16),
+              textAlign: TextAlign.center,
+            ),
+          ),
+        if (!_isLoading && _attractions.isNotEmpty)
+          Expanded(
+            child: ListView.builder(
+              itemCount: _attractions.length,
+              itemBuilder: (context, index) {
+                final attraction = _attractions[index];
+                final String title = attraction['name'] ?? attraction['title'] ?? 'Nieznana atrakcja';
+                final String rawKinds = attraction['kinds'] ?? '';
+                final String subtitle = rawKinds.isNotEmpty ? _formatKinds(rawKinds) : (attraction['address'] ?? '');
+
+                return Card(
+                  margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                  child: ListTile(
+                    leading: const CircleAvatar(
+                      backgroundColor: Colors.blueAccent,
+                      child: Icon(Icons.place, color: Colors.white),
+                    ),
+                    onTap: () => _showAttractionDetails(attraction),
+                    title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: subtitle.isNotEmpty 
+                        ? Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis) 
+                        : null,
+                    trailing: IconButton(
+                      icon: const Icon(Icons.add_circle, color: Colors.green, size: 30),
+                      onPressed: () => _addToItinerary(attraction),
+                      tooltip: 'Dodaj do planu wycieczki',
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+      ],
     );
   }
 }

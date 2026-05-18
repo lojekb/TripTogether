@@ -105,3 +105,23 @@ class Invitation(models.Model):
 
     def __str__(self):
         return f'Invitation to {self.event.title} by {self.inviter.email}'
+
+class ItineraryItem(models.Model):
+    class ItemType(models.TextChoices):
+        ATTRACTION = 'ATTRACTION', 'Attraction'
+        HOTEL = 'HOTEL', 'Hotel'
+        FLIGHT = 'FLIGHT', 'Flight'
+        OTHER = 'OTHER', 'Other'
+
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='itinerary')
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True, default='')
+    item_type = models.CharField(max_length=20, choices=ItemType.choices, default=ItemType.OTHER)
+    external_id = models.CharField(max_length=100, blank=True, null=True)
+    location_lat = models.FloatField(null=True, blank=True)
+    location_lon = models.FloatField(null=True, blank=True)
+    created_by = models.ForeignKey('api.User', on_delete=models.SET_NULL, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.title} ({self.item_type})"

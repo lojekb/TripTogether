@@ -8,6 +8,7 @@ import 'package:trip_together/services/auth_state.dart';
 import 'package:trip_together/services/auth_service.dart';
 import 'screens/create_event_screen.dart';
 import 'screens/invite_screen.dart';
+import 'screens/event_details_screen.dart';
 
 void main() {
   runApp(const MainApp());
@@ -82,13 +83,13 @@ class _EventScreenState extends State<EventScreen> {
     final result = await _apiService.generateInvitation(eventId, authToken: auth.token!);
     if (!mounted) return;
     if (result == null) {
-      messenger.showSnackBar(const SnackBar(content: Text('Błąd generowania linku.')));
+      messenger.showSnackBar(const SnackBar(content: Text('Error generating link.')));
       return;
     }
     final inviteUrl = '${Uri.base.origin}/#/invite/${result['token']}';
     await Clipboard.setData(ClipboardData(text: inviteUrl));
     if (!mounted) return;
-    messenger.showSnackBar(const SnackBar(content: Text('Link skopiowany!')));
+    messenger.showSnackBar(const SnackBar(content: Text('Link copied!')));
   }
 
   void _fetchEvents(String? token) async {
@@ -148,13 +149,13 @@ class _EventScreenState extends State<EventScreen> {
           if (auth.currentUser == null) {
             return const Center(
               child: Text(
-                'Zaloguj się, aby zobaczyć swoje wycieczki.',
+                'Log in to see your trips.',
                 textAlign: TextAlign.center,
               ),
             );
           }
           if (_events.isEmpty) {
-            return const Center(child: Text('Brak wydarzeń. Utwórz pierwsze!'));
+            return const Center(child: Text('No events found. Create the first one!'));
           }
           return ListView.builder(
             itemCount: _events.length,
@@ -164,9 +165,17 @@ class _EventScreenState extends State<EventScreen> {
                 leading: const Icon(Icons.flight_takeoff),
                 title: Text(event['title']),
                 subtitle: Text('${event['destination_city']}, ${event['destination_country']}'),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => EventDetailsScreen(event: event),
+                    ),
+                  );
+                },
                 trailing: IconButton(
                   icon: const Icon(Icons.share),
-                  tooltip: 'Zaproś',
+                  tooltip: 'Invite',
                   onPressed: () => _shareInvitation(context, event['id'].toString()),
                 ),
               );

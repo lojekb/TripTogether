@@ -65,6 +65,6 @@ void main() {
     await tester.tap(find.text('Atrakcje'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Miasto'), findsOneWidget);
+    expect(find.widgetWithText(TextField, 'Miasto'), findsOneWidget);
   });
 }

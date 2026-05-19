@@ -3,9 +3,11 @@ from rest_framework.authtoken.models import Token
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status, generics, permissions
+import requests
+from django.conf import settings
 
-from .models import Event, User, Membership, Invitation
-from .serializers import EventSerializer, UserRegistrationSerializer
+from .models import Event, User, Membership, Invitation, ItineraryItem
+from .serializers import EventSerializer, UserRegistrationSerializer, ItineraryItemSerializer
 
 # 1. AUTH & USERS
 class RegistrationView(generics.CreateAPIView):
@@ -145,19 +147,108 @@ def join_event(request, token):
 # 5. ITINERARY
 @api_view(['GET', 'POST'])
 def itinerary_list_create(request, event_id):
+    try:
+        event = Event.objects.get(pk=event_id)
+    except (Event.DoesNotExist, ValueError):
+        return Response({"detail": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    if not request.user.is_authenticated or not Membership.objects.filter(user=request.user, event=event).exists():
+        return Response({"detail": "Not authorized to view or edit this itinerary."}, status=status.HTTP_403_FORBIDDEN)
+
     if request.method == 'POST':
-        # require auth to modify itinerary
-        if not request.user or not request.user.is_authenticated:
-            return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
-        return Response({"id": "item-123", "type": "HOTEL"}, status=status.HTTP_201_CREATED)
-    return Response([{"id": "item-1", "type": "FLIGHT"}], status=status.HTTP_200_OK)
+        serializer = ItineraryItemSerializer(data=request.data)
+        if serializer.is_valid():
+            title = serializer.validated_data.get('title')
+            
+            if ItineraryItem.objects.filter(event=event, title=title).exists():
+                return Response({"detail": "Ta atrakcja znajduje się już w planie podróży."}, status=status.HTTP_400_BAD_REQUEST)
+                
+            serializer.save(event=event, created_by=request.user)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    items = ItineraryItem.objects.filter(event=event).order_by('created_at')
+    serializer = ItineraryItemSerializer(items, many=True)
+    return Response(serializer.data, status=status.HTTP_200_OK)
 
 @api_view(['DELETE'])
 def itinerary_delete(request, event_id, item_id):
     if not request.user or not request.user.is_authenticated:
         return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
-    return Response({"message": "Item deleted"}, status=status.HTTP_204_NO_CONTENT)
 
+    try:
+        item = ItineraryItem.objects.get(pk=item_id, event_id=event_id)
+        if not Membership.objects.filter(user=request.user, event_id=event_id).exists():
+            return Response({"detail": "Not authorized to delete from this itinerary."}, status=status.HTTP_403_FORBIDDEN)
+        item.delete()
+        return Response({"message": "Item deleted"}, status=status.HTTP_204_NO_CONTENT)
+    except (ItineraryItem.DoesNotExist, ValueError):
+        return Response({"detail": "Item not found."}, status=status.HTTP_404_NOT_FOUND)
+
+@api_view(['GET'])
+def search_attractions(request):
+    if not request.user.is_authenticated:
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+        
+    city = request.query_params.get('city')
+    if not city:
+        return Response({"detail": "City parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        
+    api_key = "88dbcf3ec9msh36cfb22bd814421p1ffb03jsn45e806537050"
+     
+    headers = {
+        "X-RapidAPI-Key": api_key,
+        "X-RapidAPI-Host": "opentripmap-places-v1.p.rapidapi.com"
+    }
+
+    # Uzyskanie koordynatów
+    geo_url = "https://opentripmap-places-v1.p.rapidapi.com/en/places/geoname"
+    geo_resp = requests.get(geo_url, headers=headers, params={"name": city})
+    
+    if geo_resp.status_code != 200 or 'lat' not in geo_resp.json():
+        return Response({"detail": "City not found or API error."}, status=status.HTTP_404_NOT_FOUND)
+        
+    geo_data = geo_resp.json()
+    lat, lon = geo_data['lat'], geo_data['lon']
+
+    # Szukanie atrakcji na ich podstawie
+    places_url = "https://opentripmap-places-v1.p.rapidapi.com/en/places/radius"
+    places_querystring = {
+        "radius": "10000", 
+        "lon": str(lon), 
+        "lat": str(lat), 
+        "kinds": "cultural,historic,architecture,natural,amusements",
+        "rate": "2", # 2 oznacza średnią i wysoką popularność
+        "limit": "30" # limit
+    }
+    places_resp = requests.get(places_url, headers=headers, params=places_querystring)
+
+    
+    if places_resp.status_code != 200:
+        error_msg = places_resp.text
+        return Response({"detail": f"Error fetching attractions API: {error_msg}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+    features = places_resp.json().get('features', [])
+    attractions = []
+    
+    for f in features:
+        props = f.get('properties', {})
+        geom = f.get('geometry', {}).get('coordinates', [None, None])
+        
+        name = props.get('name')
+        if not name:
+            continue
+            
+        kinds = props.get('kinds', '')
+        
+        excluded_keywords = ['hotel', 'accommodation', 'hostel', 'motel', 'guest_house', 'resort', 'apartments']
+        if any(keyword in kinds.lower() for keyword in excluded_keywords):
+            continue
+            
+        attractions.append({"name": name, "kinds": kinds, "lat": geom[1] if len(geom) > 1 else None, "lon": geom[0] if len(geom) > 0 else None})
+        
+    return Response(attractions, status=status.HTTP_200_OK)
 # 6. POLLS
 @api_view(['POST'])
 def poll_create(request, event_id):

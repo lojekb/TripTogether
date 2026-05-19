@@ -1,6 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:provider/provider.dart';
+import 'package:trip_together/services/auth_state.dart'; 
+import 'package:trip_together/services/auth_service.dart';
 import 'package:trip_together/screens/event_details_screen.dart';
+
+class _StubAuthService extends AuthService {
+  _StubAuthService() : super(baseUrl: 'http://test');
+}
 
 void main() {
   testWidgets('EventDetailsScreen displays all required tabs', (WidgetTester tester) async {
@@ -11,8 +18,11 @@ void main() {
       'destination_country': 'France',
     };
 
-    await tester.pumpWidget(MaterialApp(
-      home: EventDetailsScreen(event: event),
+    await tester.pumpWidget(ChangeNotifierProvider<AuthState>(
+      create: (_) => AuthState(authService: _StubAuthService()),
+      child: MaterialApp(
+        home: EventDetailsScreen(event: event),
+      ),
     ));
 
     expect(find.text('Test Trip'), findsOneWidget);
@@ -37,8 +47,11 @@ void main() {
       'destination_country': 'France',
     };
 
-    await tester.pumpWidget(MaterialApp(
-      home: EventDetailsScreen(event: event),
+    await tester.pumpWidget(ChangeNotifierProvider<AuthState>(
+      create: (_) => AuthState(authService: _StubAuthService()),
+      child: MaterialApp(
+        home: EventDetailsScreen(event: event),
+      ),
     ));
 
     await tester.tap(find.text('Nocleg'));
@@ -58,13 +71,19 @@ void main() {
       'destination_country': 'France',
     };
 
-    await tester.pumpWidget(MaterialApp(
-      home: EventDetailsScreen(event: event),
+    await tester.pumpWidget(ChangeNotifierProvider<AuthState>(
+      create: (_) => AuthState(authService: _StubAuthService()),
+      child: MaterialApp(
+        home: EventDetailsScreen(event: event),
+      ),
     ));
 
     await tester.tap(find.text('Atrakcje'));
-    await tester.pumpAndSettle();
+    
+    // Używamy pump zamiast pumpAndSettle, aby nie czekać w nieskończoność na zakończenie requestu HTTP
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
 
-    expect(find.text('Miasto/miejsce'), findsOneWidget);
+    expect(find.widgetWithText(TextField, 'Miasto'), findsOneWidget);
   });
 }

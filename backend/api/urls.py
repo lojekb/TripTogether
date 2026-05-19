@@ -16,6 +16,8 @@ urlpatterns = [
     path('events/<str:event_id>/itinerary/', views.itinerary_list_create, name='itinerary_list_create'),
     path('events/<str:event_id>/itinerary/<str:item_id>/', views.itinerary_delete, name='itinerary_delete'),
 
+    path('attractions/search/', views.search_attractions, name='search_attractions'),
+
     path('events/<str:event_id>/polls/', views.poll_create, name='poll_create'),
     path('events/<str:event_id>/polls/<str:poll_id>/options/', views.poll_option_create, name='poll_option_create'),
     path('events/<str:event_id>/polls/<str:poll_id>/vote/', views.poll_vote, name='poll_vote'),

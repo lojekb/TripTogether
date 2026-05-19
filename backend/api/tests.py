@@ -58,9 +58,23 @@ class AllApiTests(APITestCase):
         user = User.objects.create_user(email='it_user@example.com', username='ituser', password='password')
         self.client.force_authenticate(user=user)
 
-        self.assertEqual(self.client.get('/api/v1/events/e-1/itinerary/').status_code, status.HTTP_200_OK)
-        self.assertEqual(self.client.post('/api/v1/events/e-1/itinerary/').status_code, status.HTTP_201_CREATED)
-        self.assertEqual(self.client.delete('/api/v1/events/e-1/itinerary/i-1/').status_code, status.HTTP_204_NO_CONTENT)
+        event_data = {
+            "title": "Wycieczka Testowa Itinerary",
+            "destination_city": "Warszawa",
+            "destination_country": "Polska",
+            "start_date": "2025-01-01",
+            "end_date": "2025-01-05",
+        }
+        event_resp = self.client.post('/api/v1/events/', event_data, format='json')
+        event_id = event_resp.data['id']
+
+        self.assertEqual(self.client.get(f'/api/v1/events/{event_id}/itinerary/').status_code, status.HTTP_200_OK)
+        
+        post_resp = self.client.post(f'/api/v1/events/{event_id}/itinerary/', {"title": "Zwiedzanie Muzeum"}, format='json')
+        self.assertEqual(post_resp.status_code, status.HTTP_201_CREATED)
+        
+        item_id = post_resp.data['id']
+        self.assertEqual(self.client.delete(f'/api/v1/events/{event_id}/itinerary/{item_id}/').status_code, status.HTTP_204_NO_CONTENT)
 
     def test_polls_and_chat(self):
         # authenticate because poll endpoints require auth
@@ -504,4 +518,3 @@ class EventCreateTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('destination_city', response.data)
         self.assertIn('start_date', response.data)
-

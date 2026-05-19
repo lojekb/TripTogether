@@ -158,6 +158,11 @@ def itinerary_list_create(request, event_id):
     if request.method == 'POST':
         serializer = ItineraryItemSerializer(data=request.data)
         if serializer.is_valid():
+            title = serializer.validated_data.get('title')
+            
+            if ItineraryItem.objects.filter(event=event, title=title).exists():
+                return Response({"detail": "Ta atrakcja znajduje się już w planie podróży."}, status=status.HTTP_400_BAD_REQUEST)
+                
             serializer.save(event=event, created_by=request.user)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -213,7 +218,7 @@ def search_attractions(request):
         "radius": "10000", 
         "lon": str(lon), 
         "lat": str(lat), 
-        "kinds": "cultural,historic,architecture,natural,amusements", # Pominięcie hoteli
+        "kinds": "cultural,historic,architecture,natural,amusements",
         "rate": "2", # 2 oznacza średnią i wysoką popularność
         "limit": "30" # limit
     }
@@ -221,7 +226,8 @@ def search_attractions(request):
 
     
     if places_resp.status_code != 200:
-        return Response({"detail": "Error fetching attractions."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        error_msg = places_resp.text
+        return Response({"detail": f"Error fetching attractions API: {error_msg}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
     features = places_resp.json().get('features', [])
     attractions = []
@@ -232,9 +238,15 @@ def search_attractions(request):
         
         name = props.get('name')
         if not name:
-            continue  # Pomijamy punkty bez konkretnej nazwy
+            continue
             
-        attractions.append({"name": name, "kinds": props.get('kinds', ''), "lat": geom[1] if len(geom) > 1 else None, "lon": geom[0] if len(geom) > 0 else None})
+        kinds = props.get('kinds', '')
+        
+        excluded_keywords = ['hotel', 'accommodation', 'hostel', 'motel', 'guest_house', 'resort', 'apartments']
+        if any(keyword in kinds.lower() for keyword in excluded_keywords):
+            continue
+            
+        attractions.append({"name": name, "kinds": kinds, "lat": geom[1] if len(geom) > 1 else None, "lon": geom[0] if len(geom) > 0 else None})
         
     return Response(attractions, status=status.HTTP_200_OK)
 # 6. POLLS

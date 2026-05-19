@@ -38,10 +38,143 @@ class EventDetailsScreen extends StatelessWidget {
               eventId: event['id'].toString(),
               initialCity: event['destination_city'] ?? '',
             ),
-            const Center(child: Text('Zaakceptowany plan')),
+            ItineraryView(eventId: event['id'].toString()),
             const Center(child: Text('Czat wydarzenia')),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class ItineraryView extends StatefulWidget {
+  final String eventId;
+
+  const ItineraryView({super.key, required this.eventId});
+
+  @override
+  State<ItineraryView> createState() => _ItineraryViewState();
+}
+
+class _ItineraryViewState extends State<ItineraryView> {
+  List<dynamic> _items = [];
+  bool _isLoading = true;
+  String? _errorMessage;
+
+  String get _baseUrl {
+    return kIsWeb ? 'http://127.0.0.1:8000' : 'http://10.0.2.2:8000';
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchItinerary();
+  }
+
+  Future<void> _fetchItinerary() async {
+    final authState = Provider.of<AuthState>(context, listen: false);
+
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final response = await http.get(
+        Uri.parse('$_baseUrl/api/v1/events/${widget.eventId}/itinerary/'),
+        headers: {
+          if (authState.token != null) "Authorization": "Token ${authState.token}",
+        },
+      );
+
+      if (!mounted) return;
+
+      if (response.statusCode == 200) {
+        setState(() {
+          _items = jsonDecode(response.body);
+          _isLoading = false;
+        });
+      } else {
+        setState(() {
+          _errorMessage = 'Błąd pobierania planu: ${response.statusCode}';
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = 'Błąd połączenia: $e';
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _deleteItem(String itemId) async {
+    final authState = Provider.of<AuthState>(context, listen: false);
+
+    try {
+      final response = await http.delete(
+        Uri.parse('$_baseUrl/api/v1/events/${widget.eventId}/itinerary/$itemId/'),
+        headers: {
+          if (authState.token != null) "Authorization": "Token ${authState.token}",
+        },
+      );
+
+      if (!mounted) return;
+
+      if (response.statusCode == 204) {
+        _fetchItinerary(); // Odświeża listę po usunięciu
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Usunięto z planu.')));
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Błąd usuwania: ${response.body}')));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Błąd połączenia: $e')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) return const Center(child: CircularProgressIndicator());
+    if (_errorMessage != null) return Center(child: Text(_errorMessage!, style: const TextStyle(color: Colors.red)));
+
+    if (_items.isEmpty) {
+      return RefreshIndicator(
+        onRefresh: _fetchItinerary,
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          children: const [
+            SizedBox(height: 100),
+            Center(child: Text('Plan jest pusty. Dodaj jakieś atrakcje!')),
+          ],
+        ),
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: _fetchItinerary,
+      child: ListView.builder(
+        physics: const AlwaysScrollableScrollPhysics(),
+        itemCount: _items.length,
+        itemBuilder: (context, index) {
+          final item = _items[index];
+          final icon = item['item_type'] == 'ATTRACTION' ? Icons.local_activity : Icons.place;
+
+          return Card(
+            margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: ListTile(
+              leading: Icon(icon, color: Colors.blueAccent),
+              title: Text(item['title'] ?? 'Brak nazwy', style: const TextStyle(fontWeight: FontWeight.bold)),
+              subtitle: Text(item['item_type'] == 'ATTRACTION' ? 'Atrakcja' : (item['item_type'] ?? '')),
+              trailing: IconButton(
+                icon: const Icon(Icons.delete, color: Colors.red),
+                onPressed: () => _deleteItem(item['id'].toString()),
+                tooltip: 'Usuń z planu',
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -254,8 +387,9 @@ class _AttractionsSearchViewState extends State<AttractionsSearchView> {
     final authState = Provider.of<AuthState>(context, listen: false);
 
     try {
+      final encodedCity = Uri.encodeComponent(city);
       final response = await http.get(
-        Uri.parse('$_baseUrl/api/v1/attractions/search/?city=$city'),
+        Uri.parse('$_baseUrl/api/v1/attractions/search/?city=$encodedCity'),
         headers: {
           if (authState.token != null) "Authorization": "Token ${authState.token}",
         },
@@ -334,8 +468,15 @@ class _AttractionsSearchViewState extends State<AttractionsSearchView> {
           SnackBar(content: Text('Dodano "$title" do planu podróży!')),
         );
       } else {
+        String errorMsg = 'Błąd dodawania: ${response.statusCode}';
+        try {
+          final decoded = jsonDecode(response.body);
+          if (decoded is Map && decoded.containsKey('detail')) {
+            errorMsg = decoded['detail'];
+          }
+        } catch (_) {}
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Błąd dodawania: ${response.body}')),
+          SnackBar(content: Text(errorMsg)),
         );
       }
     } catch (e) {
@@ -378,7 +519,7 @@ class _AttractionsSearchViewState extends State<AttractionsSearchView> {
             icon: const Icon(Icons.search),
             label: const Text('Szukaj w Google'),
             onPressed: () async {
-              final query = Uri.encodeComponent('$title atrakcja');
+              final query = Uri.encodeComponent(title);
               final url = Uri.parse('https://www.google.com/search?q=$query');
               if (await canLaunchUrl(url)) {
                 await launchUrl(url, mode: LaunchMode.externalApplication);

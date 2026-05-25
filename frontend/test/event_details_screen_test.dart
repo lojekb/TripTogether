@@ -57,10 +57,11 @@ void main() {
     await tester.tap(find.text('Nocleg'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Gdzie'), findsOneWidget);
-    expect(find.text('Termin pobytu (od - do)'), findsOneWidget);
-    expect(find.text('Wybierz od kiedy do kiedy'), findsOneWidget);
-    expect(find.widgetWithText(TextField, 'Liczba osób'), findsOneWidget);
+    expect(find.text('City'), findsOneWidget);
+    expect(find.text('Check-in'), findsOneWidget);
+    expect(find.text('Check-out'), findsOneWidget);
+    expect(find.text('Adults'), findsOneWidget);
+    expect(find.text('Search hotels'), findsOneWidget);
   });
 
   testWidgets('EventDetailsScreen has inputs for Attractions tab', (WidgetTester tester) async {

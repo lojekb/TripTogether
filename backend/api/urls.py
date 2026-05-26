@@ -1,5 +1,6 @@
 from django.urls import path
 from . import views
+from . import views_hotels
 
 urlpatterns = [
     path('auth/register/', views.register_user, name='register_user'),
@@ -24,4 +25,6 @@ urlpatterns = [
     path('events/<str:event_id>/polls/<str:poll_id>/close/', views.poll_close, name='poll_close'),
 
     path('events/<str:event_id>/messages/', views.chat_messages, name='chat_messages'),
+
+    path('hotels/search/', views_hotels.HotelSearchAPIView.as_view(), name='hotel_search'),
 ]

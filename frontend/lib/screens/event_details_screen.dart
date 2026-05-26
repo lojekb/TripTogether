@@ -6,6 +6,9 @@ import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:trip_together/services/auth_state.dart';
+import 'package:trip_together/services/api_exception.dart';
+import 'package:trip_together/services/hotel_api.dart';
+import 'package:trip_together/models/hotel_search_models.dart';
 
 class EventDetailsScreen extends StatelessWidget {
   final Map<String, dynamic> event;
@@ -254,74 +257,453 @@ class _TransportSearchViewState extends State<TransportSearchView> {
 }
 
 class AccommodationSearchView extends StatefulWidget {
-  const AccommodationSearchView({super.key});
+  final IHotelApi? hotelApi;
+
+  const AccommodationSearchView({super.key, this.hotelApi});
 
   @override
   State<AccommodationSearchView> createState() => _AccommodationSearchViewState();
 }
 
 class _AccommodationSearchViewState extends State<AccommodationSearchView> {
-  DateTimeRange? _selectedDateRange;
+  late final IHotelApi _hotelApi;
+  late final TextEditingController _cityController;
+  late final TextEditingController _adultsController;
 
-  Future<void> _pickDateRange() async {
-    final pickedRange = await showDateRangePicker(
+  final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
+
+  DateTime? _checkIn;
+  DateTime? _checkOut;
+  String? _dateValidationError;
+
+  bool _isLoading = false;
+
+  bool _hasSearched = false;
+
+  List<Hotel> _hotels = const [];
+  int _requestSeq = 0;
+
+  String? _lastQ;
+
+  @override
+  void initState() {
+    super.initState();
+    _hotelApi = widget.hotelApi ?? HotelApi(baseUrl: ApiEnvironment.baseUrl);
+    _cityController = TextEditingController();
+    _adultsController = TextEditingController(text: '1');
+  }
+
+  @override
+  void dispose() {
+    _hotelApi.cancelOngoing();
+    _cityController.dispose();
+    _adultsController.dispose();
+    super.dispose();
+  }
+
+  String? _fmt(DateTime? date) {
+    if (date == null) return null;
+    return DateFormat('yyyy-MM-dd').format(date);
+  }
+
+  Future<void> _pickCheckIn() async {
+    final picked = await showDatePicker(
       context: context,
+      initialDate: _checkIn ?? DateTime.now(),
       firstDate: DateTime.now(),
       lastDate: DateTime(2100),
     );
-    if (pickedRange != null) {
-      setState(() {
-        _selectedDateRange = pickedRange;
-      });
+    if (!mounted || picked == null) return;
+    setState(() {
+      _checkIn = picked;
+      _validateDates(setStateError: true);
+    });
+  }
+
+  Future<void> _pickCheckOut() async {
+    final initial = _checkOut ?? (_checkIn?.add(const Duration(days: 1)) ?? DateTime.now().add(const Duration(days: 1)));
+    final first = _checkIn ?? DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: initial.isBefore(first) ? first : initial,
+      firstDate: first,
+      lastDate: DateTime(2100),
+    );
+    if (!mounted || picked == null) return;
+    setState(() {
+      _checkOut = picked;
+      _validateDates(setStateError: true);
+    });
+  }
+
+  bool _validateDates({required bool setStateError}) {
+    String? error;
+    if (_checkIn != null && _checkOut != null) {
+      if (!_checkOut!.isAfter(_checkIn!)) {
+        error = 'Check-out must be after check-in.';
+      }
     }
+    if (setStateError) {
+      _dateValidationError = error;
+    }
+    return error == null;
+  }
+
+  int _parseAdults() {
+    final raw = _adultsController.text.trim();
+    final parsed = int.tryParse(raw);
+    if (parsed == null || parsed < 1) return 1;
+    return parsed;
+  }
+
+  Future<void> _search() async {
+    if (_isLoading) return;
+
+    final formOk = _formKey.currentState?.validate() ?? true;
+    final datesOk = _validateDates(setStateError: true);
+    if (!formOk || !datesOk) {
+      setState(() {});
+      return;
+    }
+
+    final q = _cityController.text.trim();
+    if (q.length < 2) {
+      // Minimal UX guard even if validator is bypassed.
+      return;
+    }
+
+    final adults = _parseAdults();
+    final checkIn = _fmt(_checkIn);
+    final checkOut = _fmt(_checkOut);
+
+    _lastQ = q;
+
+    final requestId = ++_requestSeq;
+    setState(() {
+      _hasSearched = true;
+      _isLoading = true;
+      _hotels = const [];
+    });
+
+    try {
+      final result = await _hotelApi.searchHotels(
+        q: q,
+        checkIn: checkIn,
+        checkOut: checkOut,
+        adults: adults,
+        limit: 15,
+      );
+
+      if (!mounted || requestId != _requestSeq) return;
+      setState(() {
+        _hotels = result.results;
+      });
+    } on ApiException catch (e) {
+      if (!mounted || requestId != _requestSeq) return;
+      _showError(e);
+    } catch (e) {
+      if (!mounted || requestId != _requestSeq) return;
+      _showError(ApiException.unknown(message: e.toString()));
+    } finally {
+      if (mounted && requestId == _requestSeq) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  void _showError(ApiException e) {
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(e.message),
+        action: SnackBarAction(
+          label: 'Retry',
+          onPressed: () {
+            if (_lastQ == null) return;
+            _search();
+          },
+        ),
+      ),
+    );
+  }
+
+  List<Rate> _topRates(Hotel hotel) {
+    final rates = List<Rate>.from(hotel.rates);
+    rates.sort((a, b) => (a.perNight ?? a.rate ?? double.infinity).compareTo(b.perNight ?? b.rate ?? double.infinity));
+    if (rates.length <= 3) return rates;
+    return rates.sublist(0, 3);
+  }
+
+  Rate? _cheapestRate(Hotel hotel) {
+    final rates = _topRates(hotel);
+    if (rates.isEmpty) return null;
+    return rates.first;
+  }
+
+  Widget _buildRatingStars(double? rating) {
+    final value = (rating ?? 0).clamp(0, 5);
+    final full = value.floor();
+    final hasHalf = (value - full) >= 0.5;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: List<Widget>.generate(5, (index) {
+        if (index < full) {
+          return const Icon(Icons.star, size: 16, color: Colors.amber);
+        }
+        if (index == full && hasHalf) {
+          return const Icon(Icons.star_half, size: 16, color: Colors.amber);
+        }
+        return const Icon(Icons.star_border, size: 16, color: Colors.amber);
+      }),
+    );
+  }
+
+  Future<void> _openHotelUrl(String url) async {
+    final uri = Uri.tryParse(url);
+    if (uri == null) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Invalid URL.')));
+      return;
+    }
+    final ok = await canLaunchUrl(uri);
+    if (!ok) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Cannot open link.')));
+      return;
+    }
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
+  Widget _buildPrices(Hotel hotel) {
+    if (hotel.rates.isNotEmpty) {
+      final cheapest = _cheapestRate(hotel);
+      final offers = _topRates(hotel);
+
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (cheapest != null)
+            Text(
+              'From ${cheapest.perNight ?? cheapest.rate ?? '-'} / night • total ${cheapest.totalForStay ?? '-'}',
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+          const SizedBox(height: 4),
+          ...offers.map(
+            (r) => Text(
+              '${r.name ?? r.code ?? 'Offer'}: ${r.perNight ?? r.rate ?? '-'} / night',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      );
+    }
+
+    final pr = hotel.priceRanges;
+    if (pr != null && (pr.minimum != null || pr.maximum != null)) {
+      return Text('Price range: ${pr.minimum ?? '-'} – ${pr.maximum ?? '-'}');
+    }
+
+    return const Text('No prices available');
   }
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(16.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const TextField(
-            decoration: InputDecoration(
-              labelText: 'Gdzie',
-              border: OutlineInputBorder(),
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Form(
+            key: _formKey,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Semantics(
+                  label: 'Hotel search city input',
+                  textField: true,
+                  child: TextFormField(
+                    key: const Key('hotelSearch_city'),
+                    controller: _cityController,
+                    enabled: !_isLoading,
+                    decoration: const InputDecoration(
+                      labelText: 'City',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.location_city),
+                    ),
+                    validator: (v) {
+                      final value = (v ?? '').trim();
+                      if (value.isEmpty) return 'City is required.';
+                      if (value.length < 2) return 'Enter at least 2 characters.';
+                      return null;
+                    },
+                    onFieldSubmitted: (_) => _search(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Semantics(
+                        label: 'Hotel search check-in picker',
+                        button: true,
+                        child: InkWell(
+                          key: const Key('hotelSearch_checkIn'),
+                          onTap: !_isLoading ? _pickCheckIn : null,
+                          child: InputDecorator(
+                            decoration: const InputDecoration(
+                              labelText: 'Check-in',
+                              border: OutlineInputBorder(),
+                            ),
+                            child: Text(_fmt(_checkIn) ?? 'Select date'),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Semantics(
+                        label: 'Hotel search check-out picker',
+                        button: true,
+                        child: InkWell(
+                          key: const Key('hotelSearch_checkOut'),
+                          onTap: !_isLoading ? _pickCheckOut : null,
+                          child: InputDecorator(
+                            decoration: InputDecoration(
+                              labelText: 'Check-out',
+                              border: const OutlineInputBorder(),
+                              errorText: _dateValidationError,
+                            ),
+                            child: Text(_fmt(_checkOut) ?? 'Select date'),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Semantics(
+                  label: 'Hotel search adults input',
+                  textField: true,
+                  child: TextFormField(
+                    key: const Key('hotelSearch_adults'),
+                    controller: _adultsController,
+                    enabled: !_isLoading,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Adults',
+                      border: OutlineInputBorder(),
+                    ),
+                    validator: (v) {
+                      final value = (v ?? '').trim();
+                      if (value.isEmpty) return null;
+                      final parsed = int.tryParse(value);
+                      if (parsed == null || parsed < 1) return 'Adults must be >= 1.';
+                      return null;
+                    },
+                  ),
+                ),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: Semantics(
+                    label: 'Hotel search submit button',
+                    button: true,
+                    child: ElevatedButton(
+                      key: const Key('hotelSearch_submit'),
+                      onPressed: _isLoading ? null : _search,
+                      child: const Text('Search hotels'),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
-          const SizedBox(height: 16),
-          InkWell(
-            onTap: _pickDateRange,
-            child: InputDecorator(
-              decoration: const InputDecoration(
-                labelText: 'Termin pobytu (od - do)',
-                border: OutlineInputBorder(),
-              ),
-              child: Text(
-                _selectedDateRange != null
-                    ? '${DateFormat('yyyy-MM-dd').format(_selectedDateRange!.start)} - ${DateFormat('yyyy-MM-dd').format(_selectedDateRange!.end)}'
-                    : 'Wybierz od kiedy do kiedy',
-              ),
-            ),
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: Builder(
+            builder: (context) {
+              if (_isLoading) {
+                return Semantics(
+                  label: 'Hotels loading',
+                  child: ListView.builder(
+                    itemCount: 6,
+                    itemBuilder: (context, index) => const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      child: LinearProgressIndicator(),
+                    ),
+                  ),
+                );
+              }
+
+              if (_hasSearched && !_isLoading && _hotels.isEmpty) {
+                return const Center(child: Text('No hotels found'));
+              }
+
+              if (_hotels.isEmpty) {
+                return const Center(child: Text('Search to see hotels'));
+              }
+
+              return ListView.builder(
+                itemCount: _hotels.length,
+                itemBuilder: (context, index) {
+                  final hotel = _hotels[index];
+                  final rating = hotel.review?.rating;
+                  final url = hotel.url;
+
+                  return Semantics(
+                    label: 'Hotel search result item',
+                    child: Card(
+                      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      child: Padding(
+                        padding: const EdgeInsets.all(12.0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    hotel.name,
+                                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                _buildRatingStars(rating),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            if (hotel.accommodationType != null && hotel.accommodationType!.trim().isNotEmpty)
+                              Text(hotel.accommodationType!, style: const TextStyle(color: Colors.black54)),
+                            const SizedBox(height: 8),
+                            _buildPrices(hotel),
+                            if (url != null && url.trim().isNotEmpty) ...[
+                              const SizedBox(height: 10),
+                              Align(
+                                alignment: Alignment.centerRight,
+                                child: Semantics(
+                                  label: 'Open hotel link',
+                                  button: true,
+                                  child: TextButton(
+                                    onPressed: () => _openHotelUrl(url),
+                                    child: const Text('Open'),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              );
+            },
           ),
-          const SizedBox(height: 16),
-          const TextField(
-            keyboardType: TextInputType.number,
-            decoration: InputDecoration(
-              labelText: 'Liczba osób',
-              border: OutlineInputBorder(),
-            ),
-          ),
-          const SizedBox(height: 24),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              onPressed: () {},
-              child: const Text('Szukaj noclegu'),
-            ),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

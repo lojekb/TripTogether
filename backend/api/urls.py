@@ -1,6 +1,7 @@
 from django.urls import path
 from . import views
 from . import views_hotels
+from . import views_transport
 
 urlpatterns = [
     path('auth/register/', views.register_user, name='register_user'),
@@ -27,4 +28,6 @@ urlpatterns = [
     path('events/<str:event_id>/messages/', views.chat_messages, name='chat_messages'),
 
     path('hotels/search/', views_hotels.HotelSearchAPIView.as_view(), name='hotel_search'),
+
+    path('transport/search/', views_transport.TransportSearchAPIView.as_view(), name='transport_search'),
 ]

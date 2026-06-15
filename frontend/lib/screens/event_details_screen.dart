@@ -9,6 +9,8 @@ import 'package:trip_together/services/auth_state.dart';
 import 'package:trip_together/services/api_exception.dart';
 import 'package:trip_together/services/hotel_api.dart';
 import 'package:trip_together/models/hotel_search_models.dart';
+import 'package:trip_together/services/transport_api.dart';
+import 'package:trip_together/models/transport_search_models.dart';
 
 class EventDetailsScreen extends StatelessWidget {
   final Map<String, dynamic> event;
@@ -35,7 +37,10 @@ class EventDetailsScreen extends StatelessWidget {
         ),
         body: TabBarView(
           children: [
-            const TransportSearchView(),
+            TransportSearchView(
+              initialTo: event['destination_city'] ?? '',
+              eventId: event['id'].toString(),
+            ),
             const AccommodationSearchView(),
             AttractionsSearchView(
               eventId: event['id'].toString(),
@@ -162,14 +167,42 @@ class _ItineraryViewState extends State<ItineraryView> {
         itemCount: _items.length,
         itemBuilder: (context, index) {
           final item = _items[index];
-          final icon = item['item_type'] == 'ATTRACTION' ? Icons.local_activity : Icons.place;
+          final type = item['item_type'] as String?;
+          final description = (item['description'] as String?)?.trim() ?? '';
+
+          IconData icon;
+          String typeLabel;
+          switch (type) {
+            case 'ATTRACTION':
+              icon = Icons.local_activity;
+              typeLabel = 'Atrakcja';
+              break;
+            case 'HOTEL':
+              icon = Icons.hotel;
+              typeLabel = 'Nocleg';
+              break;
+            case 'FLIGHT':
+              icon = Icons.flight;
+              typeLabel = 'Transport (lot)';
+              break;
+            case 'OTHER':
+              icon = Icons.directions_transit;
+              typeLabel = 'Transport';
+              break;
+            default:
+              icon = Icons.place;
+              typeLabel = type ?? '';
+          }
+
+          final subtitleText = description.isNotEmpty ? '$typeLabel\n$description' : typeLabel;
 
           return Card(
             margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: ListTile(
+              isThreeLine: description.isNotEmpty,
               leading: Icon(icon, color: Colors.blueAccent),
               title: Text(item['title'] ?? 'Brak nazwy', style: const TextStyle(fontWeight: FontWeight.bold)),
-              subtitle: Text(item['item_type'] == 'ATTRACTION' ? 'Atrakcja' : (item['item_type'] ?? '')),
+              subtitle: Text(subtitleText),
               trailing: IconButton(
                 icon: const Icon(Icons.delete, color: Colors.red),
                 onPressed: () => _deleteItem(item['id'].toString()),
@@ -184,74 +217,544 @@ class _ItineraryViewState extends State<ItineraryView> {
 }
 
 class TransportSearchView extends StatefulWidget {
-  const TransportSearchView({super.key});
+  final ITransportApi? transportApi;
+  final String? initialTo;
+  final String? eventId;
+
+  const TransportSearchView({super.key, this.transportApi, this.initialTo, this.eventId});
 
   @override
   State<TransportSearchView> createState() => _TransportSearchViewState();
 }
 
 class _TransportSearchViewState extends State<TransportSearchView> {
+  late final ITransportApi _transportApi;
+  late final TextEditingController _fromController;
+  late final TextEditingController _toController;
+
+  final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
+
   DateTime? _selectedDate;
+  TimeOfDay? _selectedTime;
+  bool _isLoading = false;
+  bool _hasSearched = false;
+
+  List<Journey> _journeys = const [];
+  int _requestSeq = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _transportApi = widget.transportApi ?? TransportApi(baseUrl: ApiEnvironment.baseUrl);
+    _fromController = TextEditingController();
+    _toController = TextEditingController(text: widget.initialTo ?? '');
+  }
+
+  @override
+  void dispose() {
+    _transportApi.cancelOngoing();
+    _fromController.dispose();
+    _toController.dispose();
+    super.dispose();
+  }
+
+  String get _baseUrl => kIsWeb ? 'http://127.0.0.1:8000' : 'http://10.0.2.2:8000';
+
+  String? _fmt(DateTime? date) {
+    if (date == null) return null;
+    return DateFormat('yyyy-MM-dd').format(date);
+  }
+
+  String _two(int n) => n.toString().padLeft(2, '0');
+
+  String? _fmtTime(TimeOfDay? time) {
+    if (time == null) return null;
+    return '${_two(time.hour)}:${_two(time.minute)}';
+  }
+
+  /// Build an RFC3339 timestamp (with the device timezone offset) for MOTIS.
+  String _toRfc3339(DateTime local) {
+    final offset = local.timeZoneOffset;
+    final sign = offset.isNegative ? '-' : '+';
+    final oh = _two(offset.inHours.abs());
+    final om = _two(offset.inMinutes.abs() % 60);
+    return '${local.year.toString().padLeft(4, '0')}-${_two(local.month)}-${_two(local.day)}'
+        'T${_two(local.hour)}:${_two(local.minute)}:00$sign$oh:$om';
+  }
 
   Future<void> _pickDate() async {
-    final pickedDate = await showDatePicker(
+    final picked = await showDatePicker(
       context: context,
-      initialDate: DateTime.now(),
+      initialDate: _selectedDate ?? DateTime.now(),
       firstDate: DateTime.now(),
       lastDate: DateTime(2100),
     );
-    if (pickedDate != null) {
-      setState(() {
-        _selectedDate = pickedDate;
-      });
+    if (!mounted || picked == null) return;
+    setState(() => _selectedDate = picked);
+  }
+
+  Future<void> _pickTime() async {
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: _selectedTime ?? const TimeOfDay(hour: 8, minute: 0),
+    );
+    if (!mounted || picked == null) return;
+    setState(() => _selectedTime = picked);
+  }
+
+  IconData _iconFor(String? icon) {
+    switch (icon) {
+      case 'car':
+        return Icons.directions_car;
+      case 'bike':
+        return Icons.directions_bike;
+      case 'walk':
+        return Icons.directions_walk;
+      case 'train':
+        return Icons.train;
+      case 'bus':
+        return Icons.directions_bus;
+      case 'tram':
+        return Icons.tram;
+      case 'subway':
+        return Icons.subway;
+      case 'ferry':
+        return Icons.directions_boat;
+      case 'flight':
+        return Icons.flight;
+      default:
+        return Icons.alt_route;
     }
+  }
+
+  Future<void> _search() async {
+    if (_isLoading) return;
+
+    final formOk = _formKey.currentState?.validate() ?? true;
+    if (!formOk) {
+      setState(() {});
+      return;
+    }
+
+    final from = _fromController.text.trim();
+    final to = _toController.text.trim();
+
+    final requestId = ++_requestSeq;
+    setState(() {
+      _hasSearched = true;
+      _isLoading = true;
+      _journeys = const [];
+    });
+
+    String? departureIso;
+    if (_selectedDate != null || _selectedTime != null) {
+      final d = _selectedDate ?? DateTime.now();
+      final t = _selectedTime ?? const TimeOfDay(hour: 8, minute: 0);
+      departureIso = _toRfc3339(DateTime(d.year, d.month, d.day, t.hour, t.minute));
+    }
+
+    try {
+      final result = await _transportApi.searchTransport(
+        from: from,
+        to: to,
+        date: _fmt(_selectedDate),
+        time: departureIso,
+      );
+
+      if (!mounted || requestId != _requestSeq) return;
+      setState(() => _journeys = result.results);
+    } on ApiException catch (e) {
+      if (!mounted || requestId != _requestSeq) return;
+      _showError(e);
+    } catch (e) {
+      if (!mounted || requestId != _requestSeq) return;
+      _showError(ApiException.unknown(message: e.toString()));
+    } finally {
+      if (mounted && requestId == _requestSeq) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
+  void _showError(ApiException e) {
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(e.message),
+        action: SnackBarAction(label: 'Ponów', onPressed: _search),
+      ),
+    );
+  }
+
+  Future<void> _openInMaps() async {
+    final from = Uri.encodeComponent(_fromController.text.trim());
+    final to = Uri.encodeComponent(_toController.text.trim());
+    if (from.isEmpty || to.isEmpty) return;
+    final uri = Uri.parse(
+      'https://www.google.com/maps/dir/?api=1&origin=$from&destination=$to&travelmode=transit',
+    );
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } else if (mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Nie można otworzyć map.')));
+    }
+  }
+
+  String _journeyTitle(Journey journey) {
+    final from = (journey.fromName ?? '').trim().isNotEmpty
+        ? journey.fromName!.trim()
+        : _fromController.text.trim();
+    final to = (journey.toName ?? '').trim().isNotEmpty
+        ? journey.toName!.trim()
+        : _toController.text.trim();
+    final dep = journey.departure != null ? ' (${journey.departure})' : '';
+    return '$from → $to$dep';
+  }
+
+  String _journeyDescription(Journey journey) {
+    final buffer = StringBuffer();
+    final transfers = journey.transfers == 0
+        ? 'bez przesiadek'
+        : '${journey.transfers} ${_transfersLabel(journey.transfers)}';
+    buffer.writeln(
+      [
+        if (journey.summary.isNotEmpty) journey.summary,
+        if (journey.durationText != null) journey.durationText!,
+        transfers,
+      ].join(' • '),
+    );
+    for (final leg in journey.legs) {
+      final line = (leg.line != null && leg.line!.trim().isNotEmpty) ? ' ${leg.line}' : '';
+      final times = [
+        if (leg.departure != null) leg.departure!,
+        if (leg.arrival != null) leg.arrival!,
+      ].join('–');
+      final timePart = times.isNotEmpty ? ' ($times)' : '';
+      buffer.writeln('• ${leg.modeLabel}$line: ${leg.fromName ?? '?'} → ${leg.toName ?? '?'}$timePart');
+    }
+    return buffer.toString().trim();
+  }
+
+  Future<void> _saveJourney(Journey journey) async {
+    final eventId = widget.eventId;
+    if (eventId == null) return;
+
+    final authState = Provider.of<AuthState>(context, listen: false);
+    final messenger = ScaffoldMessenger.of(context);
+    final title = _journeyTitle(journey);
+    final itemType = journey.legs.any((l) => l.mode == 'AIRPLANE') ? 'FLIGHT' : 'OTHER';
+
+    try {
+      final response = await http.post(
+        Uri.parse('$_baseUrl/api/v1/events/$eventId/itinerary/'),
+        headers: {
+          'Content-Type': 'application/json',
+          if (authState.token != null) 'Authorization': 'Token ${authState.token}',
+        },
+        body: jsonEncode({
+          'title': title,
+          'description': _journeyDescription(journey),
+          'item_type': itemType,
+        }),
+      );
+
+      if (!mounted) return;
+
+      if (response.statusCode == 201) {
+        messenger.showSnackBar(SnackBar(content: Text('Zapisano połączenie do planu: $title')));
+      } else {
+        String msg = 'Błąd zapisu: ${response.statusCode}';
+        try {
+          final decoded = jsonDecode(response.body);
+          if (decoded is Map && decoded['detail'] is String) msg = decoded['detail'] as String;
+        } catch (_) {}
+        messenger.showSnackBar(SnackBar(content: Text(msg)));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(content: Text('Błąd połączenia: $e')));
+    }
+  }
+
+  Widget _buildJourneyCard(Journey journey) {
+    final stations = [
+      if (journey.fromName != null) journey.fromName!,
+      if (journey.toName != null) journey.toName!,
+    ].join(' → ');
+
+    final timeWindow = [
+      if (journey.departure != null) journey.departure!,
+      if (journey.arrival != null) journey.arrival!,
+    ].join(' → ');
+
+    final infoLine = [
+      if (timeWindow.isNotEmpty) timeWindow,
+      if (journey.durationText != null) journey.durationText!,
+      journey.transfers == 0
+          ? 'bez przesiadek'
+          : '${journey.transfers} ${_transfersLabel(journey.transfers)}',
+    ].join(' • ');
+
+    return Semantics(
+      label: 'Transport result item',
+      child: Card(
+        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: ExpansionTile(
+          leading: CircleAvatar(
+            backgroundColor: Colors.blueAccent,
+            child: Icon(_iconFor(journey.icon), color: Colors.white),
+          ),
+          title: Text(
+            journey.summary.isNotEmpty ? journey.summary : 'Połączenie',
+            style: const TextStyle(fontWeight: FontWeight.bold),
+          ),
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (stations.isNotEmpty)
+                Text(stations, maxLines: 2, overflow: TextOverflow.ellipsis),
+              Text(infoLine, style: const TextStyle(color: Colors.black54)),
+            ],
+          ),
+          children: [
+            for (final leg in journey.legs) _buildLegTile(leg),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+              child: Row(
+                children: [
+                  if (widget.eventId != null)
+                    Expanded(
+                      child: TextButton.icon(
+                        icon: const Icon(Icons.add_circle_outline, size: 18, color: Colors.green),
+                        label: const Text('Zapisz do planu'),
+                        onPressed: () => _saveJourney(journey),
+                      ),
+                    ),
+                  Expanded(
+                    child: TextButton.icon(
+                      icon: const Icon(Icons.map, size: 18),
+                      label: const Text('Mapy Google'),
+                      onPressed: _openInMaps,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _transfersLabel(int transfers) {
+    if (transfers == 1) return 'przesiadka';
+    if (transfers >= 2 && transfers <= 4) return 'przesiadki';
+    return 'przesiadek';
+  }
+
+  Widget _buildLegTile(JourneyLeg leg) {
+    final from = [
+      if (leg.departure != null) leg.departure!,
+      if (leg.fromName != null) leg.fromName!,
+      if (leg.departureTrack != null && leg.departureTrack!.trim().isNotEmpty)
+        'peron ${leg.departureTrack}',
+    ].join('  ');
+
+    final to = [
+      if (leg.arrival != null) leg.arrival!,
+      if (leg.toName != null) leg.toName!,
+      if (leg.arrivalTrack != null && leg.arrivalTrack!.trim().isNotEmpty)
+        'peron ${leg.arrivalTrack}',
+    ].join('  ');
+
+    final titleParts = [
+      leg.modeLabel,
+      if (leg.line != null && leg.line!.trim().isNotEmpty) leg.line!,
+    ].join(' ');
+
+    final meta = <String>[
+      if (leg.durationText != null) leg.durationText!,
+      if (!leg.isWalk && leg.stops > 0) '${leg.stops} ${_stopsLabel(leg.stops)}',
+      if (leg.isWalk && leg.distanceKm != null) '${leg.distanceKm} km',
+      if (leg.realTime) 'czas rzeczywisty',
+    ].join(' • ');
+
+    return ListTile(
+      dense: true,
+      leading: Icon(
+        _iconFor(leg.icon),
+        color: leg.isWalk ? Colors.grey : Colors.blueAccent,
+      ),
+      title: Text(titleParts, style: const TextStyle(fontWeight: FontWeight.w600)),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (from.trim().isNotEmpty) Text(from),
+          if (to.trim().isNotEmpty) Text(to),
+          if (leg.headsign != null && leg.headsign!.trim().isNotEmpty)
+            Text('kierunek: ${leg.headsign}', style: const TextStyle(color: Colors.black54)),
+          if (leg.agency != null && leg.agency!.trim().isNotEmpty)
+            Text(leg.agency!, style: const TextStyle(color: Colors.black54, fontStyle: FontStyle.italic)),
+          if (meta.isNotEmpty)
+            Text(meta, style: const TextStyle(color: Colors.black54)),
+        ],
+      ),
+    );
+  }
+
+  String _stopsLabel(int stops) {
+    if (stops == 1) return 'przystanek';
+    if (stops >= 2 && stops <= 4) return 'przystanki';
+    return 'przystanków';
   }
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(16.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const TextField(
-            decoration: InputDecoration(
-              labelText: 'Początek trasy',
-              border: OutlineInputBorder(),
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Form(
+            key: _formKey,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Semantics(
+                  label: 'Transport search from input',
+                  textField: true,
+                  child: TextFormField(
+                    key: const Key('transportSearch_from'),
+                    controller: _fromController,
+                    enabled: !_isLoading,
+                    decoration: const InputDecoration(
+                      labelText: 'Początek trasy',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.my_location),
+                    ),
+                    validator: (v) {
+                      final value = (v ?? '').trim();
+                      if (value.isEmpty) return 'Podaj początek trasy.';
+                      if (value.length < 2) return 'Wpisz co najmniej 2 znaki.';
+                      return null;
+                    },
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Semantics(
+                  label: 'Transport search to input',
+                  textField: true,
+                  child: TextFormField(
+                    key: const Key('transportSearch_to'),
+                    controller: _toController,
+                    enabled: !_isLoading,
+                    decoration: const InputDecoration(
+                      labelText: 'Koniec trasy',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.place),
+                    ),
+                    validator: (v) {
+                      final value = (v ?? '').trim();
+                      if (value.isEmpty) return 'Podaj koniec trasy.';
+                      if (value.length < 2) return 'Wpisz co najmniej 2 znaki.';
+                      return null;
+                    },
+                    onFieldSubmitted: (_) => _search(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Semantics(
+                        label: 'Transport search date picker',
+                        button: true,
+                        child: InkWell(
+                          key: const Key('transportSearch_date'),
+                          onTap: !_isLoading ? _pickDate : null,
+                          child: InputDecorator(
+                            decoration: const InputDecoration(
+                              labelText: 'Data',
+                              border: OutlineInputBorder(),
+                              prefixIcon: Icon(Icons.calendar_today),
+                            ),
+                            child: Text(_fmt(_selectedDate) ?? 'Wybierz datę'),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Semantics(
+                        label: 'Transport search time picker',
+                        button: true,
+                        child: InkWell(
+                          key: const Key('transportSearch_time'),
+                          onTap: !_isLoading ? _pickTime : null,
+                          child: InputDecorator(
+                            decoration: const InputDecoration(
+                              labelText: 'Godzina odjazdu',
+                              border: OutlineInputBorder(),
+                              prefixIcon: Icon(Icons.schedule),
+                            ),
+                            child: Text(_fmtTime(_selectedTime) ?? 'Wybierz godzinę'),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: Semantics(
+                    label: 'Transport search submit button',
+                    button: true,
+                    child: ElevatedButton(
+                      key: const Key('transportSearch_submit'),
+                      onPressed: _isLoading ? null : _search,
+                      child: const Text('Szukaj transportu'),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
-          const SizedBox(height: 16),
-          const TextField(
-            decoration: InputDecoration(
-              labelText: 'Koniec trasy',
-              border: OutlineInputBorder(),
-            ),
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: Builder(
+            builder: (context) {
+              if (_isLoading) {
+                return Semantics(
+                  label: 'Transport loading',
+                  child: ListView.builder(
+                    itemCount: 3,
+                    itemBuilder: (context, index) => const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      child: LinearProgressIndicator(),
+                    ),
+                  ),
+                );
+              }
+
+              if (_hasSearched && _journeys.isEmpty) {
+                return const Center(child: Text('Nie znaleziono połączeń transportu publicznego'));
+              }
+
+              if (_journeys.isEmpty) {
+                return const Center(child: Text('Wyszukaj, aby zobaczyć połączenia transportu publicznego'));
+              }
+
+              return ListView.builder(
+                itemCount: _journeys.length,
+                itemBuilder: (context, index) => _buildJourneyCard(_journeys[index]),
+              );
+            },
           ),
-          const SizedBox(height: 16),
-          InkWell(
-            onTap: _pickDate,
-            child: InputDecorator(
-              decoration: const InputDecoration(
-                labelText: 'Data',
-                border: OutlineInputBorder(),
-              ),
-              child: Text(
-                _selectedDate != null
-                    ? DateFormat('yyyy-MM-dd').format(_selectedDate!)
-                    : 'Wybierz datę',
-              ),
-            ),
-          ),
-          const SizedBox(height: 24),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              onPressed: () {},
-              child: const Text('Szukaj transportu'),
-            ),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

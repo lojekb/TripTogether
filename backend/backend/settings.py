@@ -136,3 +136,5 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # RapidAPI key for Xotelo API (local dev)
 RAPIDAPI_KEY = 'ec1b8d52aamsha4650febccedf3cp1243e6jsnc5d9f741d961'
+
+

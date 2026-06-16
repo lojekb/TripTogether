@@ -6,8 +6,8 @@ from rest_framework import status, generics, permissions
 import requests
 from django.conf import settings
 
-from .models import Event, User, Membership, Invitation, ItineraryItem
-from .serializers import EventSerializer, UserRegistrationSerializer, ItineraryItemSerializer
+from .models import Event, User, Membership, Invitation, ItineraryItem, ChatMessage
+from .serializers import EventSerializer, UserRegistrationSerializer, ItineraryItemSerializer, ChatMessageSerializer
 
 # 1. AUTH & USERS
 class RegistrationView(generics.CreateAPIView):
@@ -277,8 +277,21 @@ def poll_close(request, event_id, poll_id):
 # 7. CHAT
 @api_view(['GET', 'POST'])
 def chat_messages(request, event_id):
+    try:
+        event = Event.objects.get(pk=event_id)
+    except (Event.DoesNotExist, ValueError):
+        return Response({"detail": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    if not request.user.is_authenticated or not Membership.objects.filter(user=request.user, event=event).exists():
+        return Response({"detail": "Not authorized to view or post in this chat."}, status=status.HTTP_403_FORBIDDEN)
+
     if request.method == 'POST':
-        if not request.user or not request.user.is_authenticated:
-            return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
-        return Response({"id": "msg-1", "text": "Hey"}, status=status.HTTP_201_CREATED)
-    return Response([{"id": "msg-001", "text": "Hello!"}], status=status.HTTP_200_OK)
+        serializer = ChatMessageSerializer(data=request.data)
+        if serializer.is_valid():
+            message = serializer.save(event=event, sender=request.user)
+            return Response(ChatMessageSerializer(message).data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    messages = ChatMessage.objects.filter(event=event).select_related('sender').order_by('created_at')
+    serializer = ChatMessageSerializer(messages, many=True)
+    return Response(serializer.data, status=status.HTTP_200_OK)

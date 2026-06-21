@@ -205,3 +205,40 @@ class Vote(models.Model):
 
     def __str__(self):
         return f"{self.user_id} -> {self.option_id}"
+
+
+class Notification(models.Model):
+    class NotificationType(models.TextChoices):
+        EVENT_UPDATED = 'EVENT_UPDATED', 'Event updated'
+        POLL_CREATED = 'POLL_CREATED', 'Poll created'
+        POLL_OPTION_ADDED = 'POLL_OPTION_ADDED', 'Poll option added'
+        POLL_CLOSED = 'POLL_CLOSED', 'Poll closed'
+
+    recipient = models.ForeignKey('api.User', on_delete=models.CASCADE, related_name='notifications')
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='notifications', null=True, blank=True)
+    poll = models.ForeignKey(Poll, on_delete=models.CASCADE, related_name='notifications', null=True, blank=True)
+    actor = models.ForeignKey(
+        'api.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='generated_notifications',
+    )
+    notification_type = models.CharField(max_length=32, choices=NotificationType.choices)
+    title = models.CharField(max_length=255)
+    message = models.TextField()
+    is_read = models.BooleanField(default=False)
+    read_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def mark_as_read(self):
+        if not self.is_read:
+            self.is_read = True
+            self.read_at = timezone.now()
+            self.save(update_fields=['is_read', 'read_at'])
+
+    def __str__(self):
+        return f'{self.recipient_id}: {self.title}'

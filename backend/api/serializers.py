@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
-from .models import Event, ItineraryItem, ChatMessage, Poll, PollOption
+from .models import Event, ItineraryItem, ChatMessage, Poll, PollOption, Notification
 
 class EventSerializer(serializers.ModelSerializer):
     class Meta:
@@ -113,3 +113,19 @@ class PollSerializer(serializers.ModelSerializer):
             return None
         vote = obj.votes.filter(user=request.user).first()
         return vote.option_id if vote else None
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+    actor_username = serializers.CharField(source='actor.username', read_only=True)
+    event_id = serializers.IntegerField(source='event.id', read_only=True)
+    event_title = serializers.CharField(source='event.title', read_only=True)
+    poll_id = serializers.IntegerField(source='poll.id', read_only=True)
+    poll_question = serializers.CharField(source='poll.question', read_only=True)
+
+    class Meta:
+        model = Notification
+        fields = (
+            'id', 'notification_type', 'title', 'message', 'is_read', 'read_at', 'created_at',
+            'actor_username', 'event_id', 'event_title', 'poll_id', 'poll_question',
+        )
+        read_only_fields = fields

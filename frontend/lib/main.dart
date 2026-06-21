@@ -9,6 +9,7 @@ import 'package:trip_together/services/auth_service.dart';
 import 'screens/create_event_screen.dart';
 import 'screens/invite_screen.dart';
 import 'screens/event_details_screen.dart';
+import 'screens/notifications_screen.dart';
 
 void main() {
   runApp(const MainApp());
@@ -26,7 +27,8 @@ class MainApp extends StatelessWidget {
         theme: ThemeData(primarySwatch: Colors.blue),
         routes: {
           '/': (ctx) => const EventScreen(),
-          '/register': (ctx) => const RegistrationPage(baseUrl: 'http://localhost:8000'),
+          '/register': (ctx) =>
+              const RegistrationPage(baseUrl: 'http://localhost:8000'),
           '/login': (ctx) => const LoginPage(baseUrl: 'http://localhost:8000'),
         },
         onGenerateRoute: (settings) {
@@ -34,7 +36,8 @@ class MainApp extends StatelessWidget {
           if (uri.pathSegments.length >= 2 && uri.pathSegments[0] == 'invite') {
             final autoJoin = uri.queryParameters['autoJoin'] == 'true';
             return MaterialPageRoute(
-              builder: (_) => InviteScreen(token: uri.pathSegments[1], autoJoin: autoJoin),
+              builder: (_) =>
+                  InviteScreen(token: uri.pathSegments[1], autoJoin: autoJoin),
             );
           }
           return null;
@@ -44,6 +47,7 @@ class MainApp extends StatelessWidget {
     );
   }
 }
+
 class EventScreen extends StatefulWidget {
   const EventScreen({super.key});
 
@@ -54,15 +58,15 @@ class EventScreen extends StatefulWidget {
 class _EventScreenState extends State<EventScreen> {
   final ApiService _apiService = ApiService();
   List<dynamic> _events = [];
+  int _unreadNotifications = 0;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     final auth = Provider.of<AuthState>(context);
     if (auth.currentUser != null) {
-      _fetchEvents(auth.token);
+      _refreshHomeData(auth.token);
 
-      // Automatyczne dołączanie, jeśli użytkownik wrócił na stronę główną po logowaniu
       if (pendingInviteToken != null) {
         final token = pendingInviteToken;
         pendingInviteToken = null;
@@ -70,20 +74,31 @@ class _EventScreenState extends State<EventScreen> {
           Navigator.of(context).pushNamed('/invite/$token?autoJoin=true');
         });
       }
-
     } else {
-      setState(() => _events = []);
+      setState(() {
+        _events = [];
+        _unreadNotifications = 0;
+      });
     }
+  }
+
+  Future<void> _refreshHomeData(String? token) async {
+    await Future.wait([_fetchEvents(token), _fetchUnreadNotifications(token)]);
   }
 
   Future<void> _shareInvitation(BuildContext context, String eventId) async {
     final auth = Provider.of<AuthState>(context, listen: false);
     if (auth.token == null) return;
     final messenger = ScaffoldMessenger.of(context);
-    final result = await _apiService.generateInvitation(eventId, authToken: auth.token!);
+    final result = await _apiService.generateInvitation(
+      eventId,
+      authToken: auth.token!,
+    );
     if (!mounted) return;
     if (result == null) {
-      messenger.showSnackBar(const SnackBar(content: Text('Error generating link.')));
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Error generating link.')),
+      );
       return;
     }
     final inviteUrl = '${Uri.base.origin}/#/invite/${result['token']}';
@@ -92,11 +107,65 @@ class _EventScreenState extends State<EventScreen> {
     messenger.showSnackBar(const SnackBar(content: Text('Link copied!')));
   }
 
-  void _fetchEvents(String? token) async {
+  Future<void> _fetchEvents(String? token) async {
     final events = await _apiService.getEvents(token: token);
     if (mounted) {
       setState(() => _events = events);
     }
+  }
+
+  Future<void> _fetchUnreadNotifications(String? token) async {
+    if (token == null) return;
+    final notifications = await _apiService.getNotifications(authToken: token);
+    if (!mounted) return;
+    setState(() {
+      _unreadNotifications = notifications
+          .where((item) => item['is_read'] != true)
+          .length;
+    });
+  }
+
+  Widget _buildNotificationsButton(String token) {
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        IconButton(
+          tooltip: 'Notifications',
+          icon: const Icon(Icons.notifications_none),
+          color: Colors.black87,
+          onPressed: () async {
+            await Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const NotificationsScreen()),
+            );
+            if (mounted) {
+              await _fetchUnreadNotifications(token);
+            }
+          },
+        ),
+        if (_unreadNotifications > 0)
+          Positioned(
+            right: 6,
+            top: 6,
+            child: Container(
+              padding: const EdgeInsets.all(3),
+              decoration: const BoxDecoration(
+                color: Colors.red,
+                shape: BoxShape.circle,
+              ),
+              constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
+              child: Text(
+                _unreadNotifications > 99 ? '99+' : '$_unreadNotifications',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 9,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
   }
 
   @override
@@ -105,43 +174,51 @@ class _EventScreenState extends State<EventScreen> {
       appBar: AppBar(
         title: const Text('TripTogether Events'),
         actions: [
-          Consumer<AuthState>(builder: (context, auth, _) {
-            if (auth.currentUser == null) {
+          Consumer<AuthState>(
+            builder: (context, auth, _) {
+              if (auth.currentUser == null) {
+                return Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextButton(
+                      onPressed: () =>
+                          Navigator.of(context).pushNamed('/login'),
+                      style: TextButton.styleFrom(
+                        foregroundColor: Colors.black87,
+                      ),
+                      child: const Text('Login'),
+                    ),
+                    TextButton(
+                      onPressed: () =>
+                          Navigator.of(context).pushNamed('/register'),
+                      style: TextButton.styleFrom(
+                        foregroundColor: Colors.black87,
+                      ),
+                      child: const Text('Register'),
+                    ),
+                  ],
+                );
+              }
+
               return Row(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.white,
-                      foregroundColor: Colors.blue,
-                    ),
-                    onPressed: () => Navigator.of(context).pushNamed('/login'),
-                    child: const Text('Login'),
-                  ),
-                  const SizedBox(width: 8),
-                  ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.white,
-                      foregroundColor: Colors.blue,
-                    ),
-                    onPressed: () => Navigator.of(context).pushNamed('/register'),
-                    child: const Text('Register'),
+                  _buildNotificationsButton(auth.token!),
+                  IconButton(
+                    tooltip: 'Logout',
+                    icon: const Icon(Icons.logout),
+                    color: Colors.black87,
+                    onPressed: () {
+                      auth.logout();
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Logged out')),
+                      );
+                    },
                   ),
                 ],
               );
-            }
-
-            return ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.white,
-                foregroundColor: Colors.blue,
-              ),
-              onPressed: () {
-                auth.logout();
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Logged out')));
-              },
-              child: const Text('Logout'),
-            );
-          }),
+            },
+          ),
         ],
       ),
       body: Consumer<AuthState>(
@@ -154,17 +231,24 @@ class _EventScreenState extends State<EventScreen> {
               ),
             );
           }
+
           if (_events.isEmpty) {
-            return const Center(child: Text('No events found. Create the first one!'));
+            return const Center(
+              child: Text('No events found. Create the first one!'),
+            );
           }
+
           return ListView.builder(
+            padding: const EdgeInsets.symmetric(vertical: 8),
             itemCount: _events.length,
             itemBuilder: (context, index) {
               final event = _events[index];
               return ListTile(
                 leading: const Icon(Icons.flight_takeoff),
                 title: Text(event['title']),
-                subtitle: Text('${event['destination_city']}, ${event['destination_country']}'),
+                subtitle: Text(
+                  '${event['destination_city']}, ${event['destination_country']}',
+                ),
                 onTap: () {
                   Navigator.push(
                     context,
@@ -176,7 +260,8 @@ class _EventScreenState extends State<EventScreen> {
                 trailing: IconButton(
                   icon: const Icon(Icons.share),
                   tooltip: 'Invite',
-                  onPressed: () => _shareInvitation(context, event['id'].toString()),
+                  onPressed: () =>
+                      _shareInvitation(context, event['id'].toString()),
                 ),
               );
             },

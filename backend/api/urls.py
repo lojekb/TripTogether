@@ -27,6 +27,9 @@ urlpatterns = [
 
     path('events/<str:event_id>/messages/', views.chat_messages, name='chat_messages'),
 
+    path('notifications/', views.notification_list, name='notification_list'),
+    path('notifications/<str:notification_id>/read/', views.notification_mark_read, name='notification_mark_read'),
+
     path('hotels/search/', views_hotels.HotelSearchAPIView.as_view(), name='hotel_search'),
 
     path('transport/search/', views_transport.TransportSearchAPIView.as_view(), name='transport_search'),

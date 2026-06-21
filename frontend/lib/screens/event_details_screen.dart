@@ -12,6 +12,7 @@ import 'package:trip_together/services/hotel_api.dart';
 import 'package:trip_together/models/hotel_search_models.dart';
 import 'package:trip_together/services/transport_api.dart';
 import 'package:trip_together/models/transport_search_models.dart';
+import 'package:trip_together/screens/members_screen.dart';
 
 class EventDetailsScreen extends StatelessWidget {
   final Map<String, dynamic> event;
@@ -20,11 +21,33 @@ class EventDetailsScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final eventId = event['id'].toString();
+    final canContribute = event['can_contribute'] == true;
+    final canManageRoles = event['can_manage_roles'] == true;
+
     return DefaultTabController(
       length: 6,
       child: Scaffold(
         appBar: AppBar(
           title: Text(event['title'] ?? 'Szczegóły wycieczki'),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.group),
+              tooltip: canManageRoles ? 'Zarządzaj rolami' : 'Uczestnicy',
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => MembersScreen(
+                      eventId: eventId,
+                      eventTitle: event['title'] ?? '',
+                      canManageRoles: canManageRoles,
+                      currentUserRole: event['my_role'] as String?,
+                    ),
+                  ),
+                );
+              },
+            ),
+          ],
           bottom: const TabBar(
             isScrollable: true,
             tabs: [
@@ -37,23 +60,33 @@ class EventDetailsScreen extends StatelessWidget {
             ],
           ),
         ),
-        body: TabBarView(
+        body: Column(
           children: [
-            TransportSearchView(
-              initialTo: event['destination_city'] ?? '',
-              eventId: event['id'].toString(),
+            if (!canContribute) const _ReadOnlyBanner(),
+            Expanded(
+              child: TabBarView(
+                children: [
+                  TransportSearchView(
+                    initialTo: event['destination_city'] ?? '',
+                    eventId: eventId,
+                    canContribute: canContribute,
+                  ),
+                  const AccommodationSearchView(),
+                  AttractionsSearchView(
+                    eventId: eventId,
+                    initialCity: event['destination_city'] ?? '',
+                    canContribute: canContribute,
+                  ),
+                  ItineraryView(eventId: eventId, canContribute: canContribute),
+                  PollsView(
+                    eventId: eventId,
+                    destinationCity: event['destination_city'] ?? '',
+                    canContribute: canContribute,
+                  ),
+                  ChatView(eventId: eventId),
+                ],
+              ),
             ),
-            const AccommodationSearchView(),
-            AttractionsSearchView(
-              eventId: event['id'].toString(),
-              initialCity: event['destination_city'] ?? '',
-            ),
-            ItineraryView(eventId: event['id'].toString()),
-            PollsView(
-              eventId: event['id'].toString(),
-              destinationCity: event['destination_city'] ?? '',
-            ),
-            ChatView(eventId: event['id'].toString()),
           ],
         ),
       ),
@@ -61,10 +94,37 @@ class EventDetailsScreen extends StatelessWidget {
   }
 }
 
+class _ReadOnlyBanner extends StatelessWidget {
+  const _ReadOnlyBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      color: const Color(0xFFFFF3E0),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      child: Row(
+        children: const [
+          Icon(Icons.lock_outline, size: 18, color: Color(0xFFE65100)),
+          SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Masz rolę „Członek” – możesz przeglądać, głosować i pisać na czacie, '
+              'ale nie możesz dodawać treści. Poproś organizatora o rolę „Uprawniony”.',
+              style: TextStyle(fontSize: 12, color: Color(0xFFE65100)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class ItineraryView extends StatefulWidget {
   final String eventId;
+  final bool canContribute;
 
-  const ItineraryView({super.key, required this.eventId});
+  const ItineraryView({super.key, required this.eventId, this.canContribute = true});
 
   @override
   State<ItineraryView> createState() => _ItineraryViewState();
@@ -229,11 +289,13 @@ class _ItineraryViewState extends State<ItineraryView> {
               leading: Icon(icon, color: Colors.blueAccent),
               title: Text(item['title'] ?? 'Brak nazwy', style: const TextStyle(fontWeight: FontWeight.bold)),
               subtitle: Text(subtitleText),
-              trailing: IconButton(
-                icon: const Icon(Icons.delete, color: Colors.red),
-                onPressed: () => _confirmDelete(item['id'].toString(), item['title'] ?? 'ten element'),
-                tooltip: 'Usuń z planu',
-              ),
+              trailing: widget.canContribute
+                  ? IconButton(
+                      icon: const Icon(Icons.delete, color: Colors.red),
+                      onPressed: () => _confirmDelete(item['id'].toString(), item['title'] ?? 'ten element'),
+                      tooltip: 'Usuń z planu',
+                    )
+                  : null,
             ),
           );
         },
@@ -246,8 +308,9 @@ class TransportSearchView extends StatefulWidget {
   final ITransportApi? transportApi;
   final String? initialTo;
   final String? eventId;
+  final bool canContribute;
 
-  const TransportSearchView({super.key, this.transportApi, this.initialTo, this.eventId});
+  const TransportSearchView({super.key, this.transportApi, this.initialTo, this.eventId, this.canContribute = true});
 
   @override
   State<TransportSearchView> createState() => _TransportSearchViewState();
@@ -550,7 +613,7 @@ class _TransportSearchViewState extends State<TransportSearchView> {
               padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
               child: Row(
                 children: [
-                  if (widget.eventId != null)
+                  if (widget.eventId != null && widget.canContribute)
                     Expanded(
                       child: TextButton.icon(
                         icon: const Icon(Icons.add_circle_outline, size: 18, color: Colors.green),
@@ -1240,11 +1303,13 @@ class _AccommodationSearchViewState extends State<AccommodationSearchView> {
 class AttractionsSearchView extends StatefulWidget {
   final String eventId;
   final String initialCity;
+  final bool canContribute;
 
   const AttractionsSearchView({
     super.key,
     required this.eventId,
     required this.initialCity,
+    this.canContribute = true,
   });
 
   @override
@@ -1507,11 +1572,13 @@ class _AttractionsSearchViewState extends State<AttractionsSearchView> {
                     subtitle: subtitle.isNotEmpty 
                         ? Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis) 
                         : null,
-                    trailing: IconButton(
-                      icon: const Icon(Icons.add_circle, color: Colors.green, size: 30),
-                      onPressed: () => _addToItinerary(attraction),
-                      tooltip: 'Dodaj do planu wycieczki',
-                    ),
+                    trailing: widget.canContribute
+                        ? IconButton(
+                            icon: const Icon(Icons.add_circle, color: Colors.green, size: 30),
+                            onPressed: () => _addToItinerary(attraction),
+                            tooltip: 'Dodaj do planu wycieczki',
+                          )
+                        : null,
                   ),
                 );
               },
@@ -1795,8 +1862,9 @@ class _ChatViewState extends State<ChatView> {
 class PollsView extends StatefulWidget {
   final String eventId;
   final String destinationCity;
+  final bool canContribute;
 
-  const PollsView({super.key, required this.eventId, this.destinationCity = ''});
+  const PollsView({super.key, required this.eventId, this.destinationCity = '', this.canContribute = true});
 
   @override
   State<PollsView> createState() => _PollsViewState();
@@ -2168,11 +2236,13 @@ class _PollsViewState extends State<PollsView> {
 
     return Scaffold(
       body: body,
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _showCreatePollDialog,
-        icon: const Icon(Icons.add),
-        label: const Text('Ankieta'),
-      ),
+      floatingActionButton: widget.canContribute
+          ? FloatingActionButton.extended(
+              onPressed: _showCreatePollDialog,
+              icon: const Icon(Icons.add),
+              label: const Text('Ankieta'),
+            )
+          : null,
     );
   }
 
@@ -2342,11 +2412,12 @@ class _PollsViewState extends State<PollsView> {
               ),
             ),
           ),
-          IconButton(
-            icon: const Icon(Icons.playlist_add, color: Colors.green),
-            tooltip: 'Dodaj do planu',
-            onPressed: () => _addOptionToPlan(option, poll['question'] ?? ''),
-          ),
+          if (widget.canContribute)
+            IconButton(
+              icon: const Icon(Icons.playlist_add, color: Colors.green),
+              tooltip: 'Dodaj do planu',
+              onPressed: () => _addOptionToPlan(option, poll['question'] ?? ''),
+            ),
         ],
       ),
     );

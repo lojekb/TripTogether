@@ -144,3 +144,64 @@ class ChatMessage(models.Model):
     def __str__(self):
         sender = self.sender.username if self.sender else 'unknown'
         return f"{sender} @ {self.event_id}: {self.content[:30]}"
+
+
+class Poll(models.Model):
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='polls')
+    question = models.CharField(max_length=255)
+    created_by = models.ForeignKey(
+        'api.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='created_polls',
+    )
+    is_closed = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.question} ({self.event_id})"
+
+
+class PollOption(models.Model):
+    class ItemType(models.TextChoices):
+        TRANSPORT = 'TRANSPORT', 'Transport'
+        HOTEL = 'HOTEL', 'Nocleg'
+        ATTRACTION = 'ATTRACTION', 'Atrakcja'
+        OTHER = 'OTHER', 'Inne'
+
+    poll = models.ForeignKey(Poll, on_delete=models.CASCADE, related_name='options')
+    text = models.CharField(max_length=255)
+    item_type = models.CharField(max_length=20, choices=ItemType.choices, default=ItemType.OTHER)
+    description = models.TextField(blank=True, default='')
+    location_lat = models.FloatField(null=True, blank=True)
+    location_lon = models.FloatField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        'api.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='created_poll_options',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['created_at']
+
+    def __str__(self):
+        return self.text
+
+
+class Vote(models.Model):
+    poll = models.ForeignKey(Poll, on_delete=models.CASCADE, related_name='votes')
+    option = models.ForeignKey(PollOption, on_delete=models.CASCADE, related_name='votes')
+    user = models.ForeignKey('api.User', on_delete=models.CASCADE, related_name='votes')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # One vote per user per poll (changing vote updates the existing record).
+        unique_together = [('poll', 'user')]
+
+    def __str__(self):
+        return f"{self.user_id} -> {self.option_id}"

@@ -21,7 +21,7 @@ class EventDetailsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 5,
+      length: 6,
       child: Scaffold(
         appBar: AppBar(
           title: Text(event['title'] ?? 'Szczegóły wycieczki'),
@@ -32,6 +32,7 @@ class EventDetailsScreen extends StatelessWidget {
               Tab(icon: Icon(Icons.hotel), text: 'Nocleg'),
               Tab(icon: Icon(Icons.local_activity), text: 'Atrakcje'),
               Tab(icon: Icon(Icons.event_available), text: 'Plan'),
+              Tab(icon: Icon(Icons.how_to_vote), text: 'Ankiety'),
               Tab(icon: Icon(Icons.chat), text: 'Czat'),
             ],
           ),
@@ -48,6 +49,10 @@ class EventDetailsScreen extends StatelessWidget {
               initialCity: event['destination_city'] ?? '',
             ),
             ItineraryView(eventId: event['id'].toString()),
+            PollsView(
+              eventId: event['id'].toString(),
+              destinationCity: event['destination_city'] ?? '',
+            ),
             ChatView(eventId: event['id'].toString()),
           ],
         ),
@@ -115,6 +120,26 @@ class _ItineraryViewState extends State<ItineraryView> {
         _errorMessage = 'Błąd połączenia: $e';
         _isLoading = false;
       });
+    }
+  }
+
+  Future<void> _confirmDelete(String itemId, String title) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Usunąć z planu?'),
+        content: Text('Czy na pewno chcesz usunąć "$title" z planu wycieczki?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Anuluj')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Usuń', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await _deleteItem(itemId);
     }
   }
 
@@ -206,7 +231,7 @@ class _ItineraryViewState extends State<ItineraryView> {
               subtitle: Text(subtitleText),
               trailing: IconButton(
                 icon: const Icon(Icons.delete, color: Colors.red),
-                onPressed: () => _deleteItem(item['id'].toString()),
+                onPressed: () => _confirmDelete(item['id'].toString(), item['title'] ?? 'ten element'),
                 tooltip: 'Usuń z planu',
               ),
             ),
@@ -1764,5 +1789,884 @@ class _ChatViewState extends State<ChatView> {
         ),
       ],
     );
+  }
+}
+
+class PollsView extends StatefulWidget {
+  final String eventId;
+  final String destinationCity;
+
+  const PollsView({super.key, required this.eventId, this.destinationCity = ''});
+
+  @override
+  State<PollsView> createState() => _PollsViewState();
+}
+
+class _PollsViewState extends State<PollsView> {
+  List<dynamic> _polls = [];
+  bool _isLoading = true;
+  String? _errorMessage;
+  bool _busy = false;
+
+  String get _baseUrl => kIsWeb ? 'http://127.0.0.1:8000' : 'http://10.0.2.2:8000';
+
+  Map<String, String> _headers({bool json = false}) {
+    final authState = Provider.of<AuthState>(context, listen: false);
+    return {
+      if (authState.token != null) 'Authorization': 'Token ${authState.token}',
+      if (json) 'Content-Type': 'application/json',
+    };
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchPolls();
+  }
+
+  Future<void> _fetchPolls({bool silent = false}) async {
+    if (!silent) {
+      setState(() {
+        _isLoading = true;
+        _errorMessage = null;
+      });
+    }
+    try {
+      final response = await http.get(
+        Uri.parse('$_baseUrl/api/v1/events/${widget.eventId}/polls/'),
+        headers: _headers(),
+      );
+      if (!mounted) return;
+      if (response.statusCode == 200) {
+        setState(() {
+          _polls = jsonDecode(utf8.decode(response.bodyBytes));
+          _isLoading = false;
+        });
+      } else {
+        setState(() {
+          _errorMessage = 'Błąd pobierania ankiet: ${response.statusCode}';
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = 'Błąd połączenia: $e';
+        _isLoading = false;
+      });
+    }
+  }
+
+  void _snack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _vote(String pollId, int optionId) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      final response = await http.post(
+        Uri.parse('$_baseUrl/api/v1/events/${widget.eventId}/polls/$pollId/vote/'),
+        headers: _headers(json: true),
+        body: jsonEncode({'option_id': optionId}),
+      );
+      if (!mounted) return;
+      if (response.statusCode == 200) {
+        await _fetchPolls(silent: true);
+      } else {
+        _snack('Nie udało się oddać głosu: ${response.statusCode}');
+      }
+    } catch (e) {
+      _snack('Błąd połączenia: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _addOption(String pollId, String text) async {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return;
+    await _postOption(pollId, {'text': trimmed});
+  }
+
+  Future<void> _addApiOption(String pollId, Map<String, dynamic> option) async {
+    await _postOption(pollId, option);
+  }
+
+  Future<void> _postOption(String pollId, Map<String, dynamic> body) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$_baseUrl/api/v1/events/${widget.eventId}/polls/$pollId/options/'),
+        headers: _headers(json: true),
+        body: jsonEncode(body),
+      );
+      if (!mounted) return;
+      if (response.statusCode == 201) {
+        await _fetchPolls(silent: true);
+      } else {
+        _snack('Nie udało się dodać propozycji: ${response.statusCode}');
+      }
+    } catch (e) {
+      _snack('Błąd połączenia: $e');
+    }
+  }
+
+  Future<void> _pickApiOption(String pollId) async {
+    final selected = await showModalBottomSheet<Map<String, dynamic>>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => ApiOptionPicker(destinationCity: widget.destinationCity),
+    );
+    if (selected != null) {
+      await _addApiOption(pollId, selected);
+    }
+  }
+
+  Future<void> _closePoll(String pollId) async {
+    try {
+      final response = await http.put(
+        Uri.parse('$_baseUrl/api/v1/events/${widget.eventId}/polls/$pollId/close/'),
+        headers: _headers(json: true),
+      );
+      if (!mounted) return;
+      if (response.statusCode == 200) {
+        await _fetchPolls(silent: true);
+      } else if (response.statusCode == 403) {
+        _snack('Tylko autor ankiety lub organizator może ją zamknąć.');
+      } else {
+        _snack('Nie udało się zamknąć ankiety: ${response.statusCode}');
+      }
+    } catch (e) {
+      _snack('Błąd połączenia: $e');
+    }
+  }
+
+  Future<void> _addOptionToPlan(Map<String, dynamic> option, String pollQuestion) async {
+    final optionText = option['text'] ?? '';
+    final pollItemType = (option['item_type'] as String?) ?? 'OTHER';
+    // Plan obsługuje typy ATTRACTION / HOTEL / FLIGHT / OTHER; transport -> OTHER.
+    final planItemType = pollItemType == 'TRANSPORT' ? 'OTHER' : pollItemType;
+    final optionDescription = (option['description'] as String?)?.trim() ?? '';
+    final description = optionDescription.isNotEmpty
+        ? '$optionDescription\n(z ankiety: $pollQuestion)'
+        : 'Z ankiety: $pollQuestion';
+
+    try {
+      final response = await http.post(
+        Uri.parse('$_baseUrl/api/v1/events/${widget.eventId}/itinerary/'),
+        headers: _headers(json: true),
+        body: jsonEncode({
+          'title': optionText,
+          'item_type': planItemType,
+          'description': description,
+          if (option['location_lat'] != null) 'location_lat': option['location_lat'],
+          if (option['location_lon'] != null) 'location_lon': option['location_lon'],
+        }),
+      );
+      if (!mounted) return;
+      if (response.statusCode == 201 || response.statusCode == 200) {
+        _snack('Dodano "$optionText" do planu.');
+      } else {
+        _snack('Nie udało się dodać do planu: ${response.statusCode}');
+      }
+    } catch (e) {
+      _snack('Błąd połączenia: $e');
+    }
+  }
+
+  Future<void> _showCreatePollDialog() async {
+    final questionController = TextEditingController();
+    final optionControllers = <TextEditingController>[
+      TextEditingController(),
+      TextEditingController(),
+    ];
+    final apiOptions = <Map<String, dynamic>>[];
+
+    final created = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            return AlertDialog(
+              title: const Text('Nowa ankieta'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: questionController,
+                      decoration: const InputDecoration(
+                        labelText: 'Pytanie',
+                        hintText: 'np. Czym dojeżdżamy?',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    const Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text('Propozycje (opcjonalnie):', style: TextStyle(fontWeight: FontWeight.bold)),
+                    ),
+                    ...optionControllers.asMap().entries.map((entry) {
+                      return Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: entry.value,
+                                decoration: InputDecoration(labelText: 'Opcja ${entry.key + 1}'),
+                              ),
+                            ),
+                            if (optionControllers.length > 1)
+                              IconButton(
+                                icon: const Icon(Icons.remove_circle_outline),
+                                onPressed: () => setDialogState(() => optionControllers.removeAt(entry.key)),
+                              ),
+                          ],
+                        ),
+                      );
+                    }),
+                    ...apiOptions.asMap().entries.map((entry) {
+                      final opt = entry.value;
+                      return Card(
+                        color: const Color(0xFFF1F8E9),
+                        margin: const EdgeInsets.only(top: 8),
+                        child: ListTile(
+                          dense: true,
+                          leading: Icon(_iconForType(opt['item_type'] as String?), size: 20),
+                          title: Text(opt['text'] ?? ''),
+                          subtitle: (opt['description'] as String?)?.isNotEmpty == true
+                              ? Text(opt['description'], maxLines: 2, overflow: TextOverflow.ellipsis)
+                              : null,
+                          trailing: IconButton(
+                            icon: const Icon(Icons.remove_circle_outline),
+                            onPressed: () => setDialogState(() => apiOptions.removeAt(entry.key)),
+                          ),
+                        ),
+                      );
+                    }),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextButton.icon(
+                            icon: const Icon(Icons.add),
+                            label: const Text('Tekst'),
+                            onPressed: () => setDialogState(() => optionControllers.add(TextEditingController())),
+                          ),
+                        ),
+                        Expanded(
+                          child: TextButton.icon(
+                            icon: const Icon(Icons.travel_explore),
+                            label: const Text('Z API'),
+                            onPressed: () async {
+                              final selected = await showModalBottomSheet<Map<String, dynamic>>(
+                                context: context,
+                                isScrollControlled: true,
+                                builder: (_) => ApiOptionPicker(destinationCity: widget.destinationCity),
+                              );
+                              if (selected != null) {
+                                setDialogState(() => apiOptions.add(selected));
+                              }
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Anuluj')),
+                ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Utwórz')),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (created == true) {
+      final question = questionController.text.trim();
+      if (question.isEmpty) {
+        _snack('Pytanie ankiety jest wymagane.');
+      } else {
+        final options = <dynamic>[
+          ...optionControllers.map((c) => c.text.trim()).where((t) => t.isNotEmpty),
+          ...apiOptions,
+        ];
+        await _createPoll(question, options);
+      }
+    }
+    questionController.dispose();
+    for (final c in optionControllers) {
+      c.dispose();
+    }
+  }
+
+  IconData _iconForType(String? itemType) {
+    switch (itemType) {
+      case 'TRANSPORT':
+        return Icons.directions_transit;
+      case 'HOTEL':
+        return Icons.hotel;
+      case 'ATTRACTION':
+        return Icons.local_activity;
+      default:
+        return Icons.label_outline;
+    }
+  }
+
+  Future<void> _createPoll(String question, List<dynamic> options) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$_baseUrl/api/v1/events/${widget.eventId}/polls/'),
+        headers: _headers(json: true),
+        body: jsonEncode({'question': question, 'options': options}),
+      );
+      if (!mounted) return;
+      if (response.statusCode == 201) {
+        await _fetchPolls(silent: true);
+        _snack('Utworzono ankietę.');
+      } else {
+        _snack('Nie udało się utworzyć ankiety: ${response.statusCode}');
+      }
+    } catch (e) {
+      _snack('Błąd połączenia: $e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    Widget body;
+    if (_isLoading) {
+      body = const Center(child: CircularProgressIndicator());
+    } else if (_errorMessage != null) {
+      body = Center(child: Text(_errorMessage!, style: const TextStyle(color: Colors.red)));
+    } else if (_polls.isEmpty) {
+      body = RefreshIndicator(
+        onRefresh: _fetchPolls,
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          children: const [
+            SizedBox(height: 100),
+            Center(child: Text('Brak ankiet. Utwórz pierwszą!')),
+          ],
+        ),
+      );
+    } else {
+      body = RefreshIndicator(
+        onRefresh: _fetchPolls,
+        child: ListView.builder(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.only(bottom: 80),
+          itemCount: _polls.length,
+          itemBuilder: (context, index) => _buildPollCard(_polls[index] as Map<String, dynamic>),
+        ),
+      );
+    }
+
+    return Scaffold(
+      body: body,
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _showCreatePollDialog,
+        icon: const Icon(Icons.add),
+        label: const Text('Ankieta'),
+      ),
+    );
+  }
+
+  Widget _buildPollCard(Map<String, dynamic> poll) {
+    final authState = Provider.of<AuthState>(context, listen: false);
+    final currentUserId = authState.currentUser?.id;
+    final pollId = poll['id'].toString();
+    final isClosed = poll['is_closed'] == true;
+    final totalVotes = (poll['total_votes'] as num?)?.toInt() ?? 0;
+    final myVote = (poll['my_vote'] as num?)?.toInt();
+    final options = (poll['options'] as List?) ?? const [];
+    final createdById = (poll['created_by_id'] as num?)?.toInt();
+    final canClose = !isClosed && currentUserId != null && createdById == currentUserId;
+    final optionController = TextEditingController();
+
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    poll['question'] ?? '',
+                    style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                  ),
+                ),
+                if (isClosed)
+                  const Chip(
+                    label: Text('Zamknięta'),
+                    backgroundColor: Color(0xFFE0E0E0),
+                    visualDensity: VisualDensity.compact,
+                  ),
+              ],
+            ),
+            Text(
+              'Autor: ${poll['created_by_username'] ?? '—'} • Głosów: $totalVotes',
+              style: const TextStyle(fontSize: 12, color: Colors.black54),
+            ),
+            const SizedBox(height: 8),
+            ...options.map((o) => _buildOptionTile(
+                  poll: poll,
+                  pollId: pollId,
+                  option: o as Map<String, dynamic>,
+                  totalVotes: totalVotes,
+                  myVote: myVote,
+                  isClosed: isClosed,
+                )),
+            if (!isClosed) ...[
+              const Divider(),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: optionController,
+                      decoration: const InputDecoration(
+                        hintText: 'Dodaj własną propozycję...',
+                        isDense: true,
+                        border: OutlineInputBorder(),
+                      ),
+                      onSubmitted: (v) => _addOption(pollId, v),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.add_circle, color: Colors.blueAccent),
+                    tooltip: 'Dodaj propozycję',
+                    onPressed: () => _addOption(pollId, optionController.text),
+                  ),
+                ],
+              ),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  icon: const Icon(Icons.travel_explore, size: 18),
+                  label: const Text('Dodaj z wyszukiwarki (transport / nocleg / atrakcje)'),
+                  onPressed: () => _pickApiOption(pollId),
+                ),
+              ),
+            ],
+            if (canClose)
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  icon: const Icon(Icons.lock_outline, size: 18),
+                  label: const Text('Zamknij ankietę'),
+                  onPressed: () => _closePoll(pollId),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildOptionTile({
+    required Map<String, dynamic> poll,
+    required String pollId,
+    required Map<String, dynamic> option,
+    required int totalVotes,
+    required int? myVote,
+    required bool isClosed,
+  }) {
+    final optionId = (option['id'] as num).toInt();
+    final voteCount = (option['vote_count'] as num?)?.toInt() ?? 0;
+    final isMyVote = myVote == optionId;
+    final fraction = totalVotes > 0 ? voteCount / totalVotes : 0.0;
+    final percent = (fraction * 100).round();
+    final itemType = option['item_type'] as String?;
+    final description = (option['description'] as String?)?.trim() ?? '';
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: InkWell(
+              onTap: isClosed || _busy ? null : () => _vote(pollId, optionId),
+              borderRadius: BorderRadius.circular(8),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          isMyVote ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+                          size: 18,
+                          color: isMyVote ? Colors.blueAccent : Colors.grey,
+                        ),
+                        const SizedBox(width: 6),
+                        if (itemType != null && itemType != 'OTHER') ...[
+                          Icon(_iconForType(itemType), size: 16, color: Colors.blueGrey),
+                          const SizedBox(width: 4),
+                        ],
+                        Expanded(
+                          child: Text(
+                            option['text'] ?? '',
+                            style: TextStyle(fontWeight: isMyVote ? FontWeight.bold : FontWeight.normal),
+                          ),
+                        ),
+                        Text('$voteCount ($percent%)', style: const TextStyle(fontSize: 12, color: Colors.black54)),
+                      ],
+                    ),
+                    if (description.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(left: 24, top: 2),
+                        child: Text(
+                          description,
+                          style: const TextStyle(fontSize: 12, color: Colors.black54),
+                        ),
+                      ),
+                    const SizedBox(height: 4),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(4),
+                      child: LinearProgressIndicator(
+                        value: fraction,
+                        minHeight: 6,
+                        backgroundColor: Colors.grey.shade200,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.playlist_add, color: Colors.green),
+            tooltip: 'Dodaj do planu',
+            onPressed: () => _addOptionToPlan(option, poll['question'] ?? ''),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+enum _ApiOptionCategory { transport, hotel, attraction }
+
+class ApiOptionPicker extends StatefulWidget {
+  final String destinationCity;
+
+  const ApiOptionPicker({super.key, this.destinationCity = ''});
+
+  @override
+  State<ApiOptionPicker> createState() => _ApiOptionPickerState();
+}
+
+class _ApiOptionPickerState extends State<ApiOptionPicker> {
+  _ApiOptionCategory _category = _ApiOptionCategory.transport;
+
+  late final TextEditingController _fromController;
+  late final TextEditingController _toController;
+  late final TextEditingController _cityController;
+
+  late final TransportApi _transportApi;
+  late final HotelApi _hotelApi;
+
+  bool _isLoading = false;
+  String? _error;
+  List<Journey> _journeys = const [];
+  List<Hotel> _hotels = const [];
+  List<dynamic> _attractions = const [];
+
+  String get _baseUrl => kIsWeb ? 'http://127.0.0.1:8000' : 'http://10.0.2.2:8000';
+
+  @override
+  void initState() {
+    super.initState();
+    _fromController = TextEditingController();
+    _toController = TextEditingController(text: widget.destinationCity);
+    _cityController = TextEditingController(text: widget.destinationCity);
+    _transportApi = TransportApi(baseUrl: ApiEnvironment.baseUrl);
+    _hotelApi = HotelApi(baseUrl: ApiEnvironment.baseUrl);
+  }
+
+  @override
+  void dispose() {
+    _transportApi.cancelOngoing();
+    _hotelApi.cancelOngoing();
+    _fromController.dispose();
+    _toController.dispose();
+    _cityController.dispose();
+    super.dispose();
+  }
+
+  void _resetResults() {
+    _journeys = const [];
+    _hotels = const [];
+    _attractions = const [];
+  }
+
+  Future<void> _search() async {
+    setState(() {
+      _isLoading = true;
+      _error = null;
+      _resetResults();
+    });
+    try {
+      switch (_category) {
+        case _ApiOptionCategory.transport:
+          final from = _fromController.text.trim();
+          final to = _toController.text.trim();
+          if (from.isEmpty || to.isEmpty) {
+            throw 'Podaj miejsce początkowe i docelowe.';
+          }
+          final result = await _transportApi.searchTransport(from: from, to: to);
+          if (!mounted) return;
+          setState(() => _journeys = result.results);
+          break;
+        case _ApiOptionCategory.hotel:
+          final city = _cityController.text.trim();
+          if (city.isEmpty) throw 'Podaj miasto.';
+          final result = await _hotelApi.searchHotels(q: city);
+          if (!mounted) return;
+          setState(() => _hotels = result.results);
+          break;
+        case _ApiOptionCategory.attraction:
+          final city = _cityController.text.trim();
+          if (city.isEmpty) throw 'Podaj miasto.';
+          await _searchAttractions(city);
+          break;
+      }
+      if (mounted && _journeys.isEmpty && _hotels.isEmpty && _attractions.isEmpty && _error == null) {
+        setState(() => _error = 'Brak wyników.');
+      }
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    } catch (e) {
+      if (mounted) setState(() => _error = e.toString());
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _searchAttractions(String city) async {
+    final authState = Provider.of<AuthState>(context, listen: false);
+    final response = await http.get(
+      Uri.parse('$_baseUrl/api/v1/attractions/search/?city=${Uri.encodeComponent(city)}'),
+      headers: {
+        if (authState.token != null) 'Authorization': 'Token ${authState.token}',
+      },
+    );
+    if (!mounted) return;
+    if (response.statusCode == 200) {
+      final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+      List<dynamic> results = [];
+      if (decoded is List) {
+        results = decoded;
+      } else if (decoded is Map) {
+        results = decoded['data'] ?? decoded['features'] ?? decoded['results'] ?? [];
+      }
+      setState(() => _attractions = results);
+    } else {
+      setState(() => _error = 'Błąd wyszukiwania: ${response.statusCode}');
+    }
+  }
+
+  void _selectTransport(Journey j) {
+    final from = j.fromName ?? _fromController.text.trim();
+    final to = j.toName ?? _toController.text.trim();
+    final parts = <String>[];
+    if (j.durationText != null) parts.add(j.durationText!);
+    parts.add(j.transfers == 0 ? 'bez przesiadek' : 'przesiadki: ${j.transfers}');
+    if (j.departure != null && j.arrival != null) parts.add('${j.departure}–${j.arrival}');
+    Navigator.pop(context, <String, dynamic>{
+      'text': '$from → $to',
+      'item_type': 'TRANSPORT',
+      'description': parts.join(' • '),
+    });
+  }
+
+  void _selectHotel(Hotel h) {
+    final parts = <String>[];
+    if (h.accommodationType != null && h.accommodationType!.isNotEmpty) parts.add(h.accommodationType!);
+    if (h.review?.rating != null) parts.add('ocena ${h.review!.rating}');
+    final price = h.priceRanges?.minimum ?? (h.rates.isNotEmpty ? h.rates.first.perNight : null);
+    if (price != null) parts.add('od ${price.round()} za noc');
+    Navigator.pop(context, <String, dynamic>{
+      'text': h.name,
+      'item_type': 'HOTEL',
+      'description': parts.join(' • '),
+    });
+  }
+
+  void _selectAttraction(dynamic a) {
+    final name = a['name'] ?? a['title'] ?? 'Atrakcja';
+    final lat = a['lat'] != null ? (a['lat'] as num).toDouble() : null;
+    final rawLon = a['lon'] ?? a['lng'];
+    final lon = rawLon != null ? (rawLon as num).toDouble() : null;
+    final option = <String, dynamic>{
+      'text': name,
+      'item_type': 'ATTRACTION',
+      'description': 'Atrakcja w ${_cityController.text.trim()}',
+    };
+    if (lat != null) option['location_lat'] = lat;
+    if (lon != null) option['location_lon'] = lon;
+    Navigator.pop(context, option);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DraggableScrollableSheet(
+      initialChildSize: 0.85,
+      minChildSize: 0.5,
+      maxChildSize: 0.95,
+      expand: false,
+      builder: (context, scrollController) {
+        return Padding(
+          padding: EdgeInsets.only(
+            left: 16,
+            right: 16,
+            top: 16,
+            bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Dodaj opcję z wyszukiwarki', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                children: [
+                  ChoiceChip(
+                    label: const Text('Transport'),
+                    avatar: const Icon(Icons.directions_transit, size: 18),
+                    selected: _category == _ApiOptionCategory.transport,
+                    onSelected: (_) => setState(() {
+                      _category = _ApiOptionCategory.transport;
+                      _error = null;
+                      _resetResults();
+                    }),
+                  ),
+                  ChoiceChip(
+                    label: const Text('Nocleg'),
+                    avatar: const Icon(Icons.hotel, size: 18),
+                    selected: _category == _ApiOptionCategory.hotel,
+                    onSelected: (_) => setState(() {
+                      _category = _ApiOptionCategory.hotel;
+                      _error = null;
+                      _resetResults();
+                    }),
+                  ),
+                  ChoiceChip(
+                    label: const Text('Atrakcje'),
+                    avatar: const Icon(Icons.local_activity, size: 18),
+                    selected: _category == _ApiOptionCategory.attraction,
+                    onSelected: (_) => setState(() {
+                      _category = _ApiOptionCategory.attraction;
+                      _error = null;
+                      _resetResults();
+                    }),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              if (_category == _ApiOptionCategory.transport) ...[
+                TextField(
+                  controller: _fromController,
+                  decoration: const InputDecoration(labelText: 'Skąd', isDense: true, border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _toController,
+                  decoration: const InputDecoration(labelText: 'Dokąd', isDense: true, border: OutlineInputBorder()),
+                ),
+              ] else
+                TextField(
+                  controller: _cityController,
+                  decoration: const InputDecoration(labelText: 'Miasto', isDense: true, border: OutlineInputBorder()),
+                ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: _isLoading ? null : _search,
+                  icon: const Icon(Icons.search),
+                  label: const Text('Szukaj'),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Expanded(child: _buildResults(scrollController)),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildResults(ScrollController scrollController) {
+    if (_isLoading) return const Center(child: CircularProgressIndicator());
+    if (_error != null) return Center(child: Text(_error!, style: const TextStyle(color: Colors.red)));
+
+    switch (_category) {
+      case _ApiOptionCategory.transport:
+        return ListView.builder(
+          controller: scrollController,
+          itemCount: _journeys.length,
+          itemBuilder: (context, i) {
+            final j = _journeys[i];
+            return Card(
+              child: ListTile(
+                leading: const Icon(Icons.directions_transit, color: Colors.blueAccent),
+                title: Text('${j.fromName ?? _fromController.text} → ${j.toName ?? _toController.text}'),
+                subtitle: Text([
+                  if (j.durationText != null) j.durationText!,
+                  j.transfers == 0 ? 'bez przesiadek' : 'przesiadki: ${j.transfers}',
+                ].join(' • ')),
+                trailing: const Icon(Icons.add_circle, color: Colors.green),
+                onTap: () => _selectTransport(j),
+              ),
+            );
+          },
+        );
+      case _ApiOptionCategory.hotel:
+        return ListView.builder(
+          controller: scrollController,
+          itemCount: _hotels.length,
+          itemBuilder: (context, i) {
+            final h = _hotels[i];
+            final price = h.priceRanges?.minimum ?? (h.rates.isNotEmpty ? h.rates.first.perNight : null);
+            return Card(
+              child: ListTile(
+                leading: const Icon(Icons.hotel, color: Colors.blueAccent),
+                title: Text(h.name),
+                subtitle: Text([
+                  if (h.review?.rating != null) 'ocena ${h.review!.rating}',
+                  if (price != null) 'od ${price.round()} za noc',
+                ].join(' • ')),
+                trailing: const Icon(Icons.add_circle, color: Colors.green),
+                onTap: () => _selectHotel(h),
+              ),
+            );
+          },
+        );
+      case _ApiOptionCategory.attraction:
+        return ListView.builder(
+          controller: scrollController,
+          itemCount: _attractions.length,
+          itemBuilder: (context, i) {
+            final a = _attractions[i];
+            return Card(
+              child: ListTile(
+                leading: const Icon(Icons.local_activity, color: Colors.blueAccent),
+                title: Text(a['name'] ?? a['title'] ?? 'Atrakcja'),
+                trailing: const Icon(Icons.add_circle, color: Colors.green),
+                onTap: () => _selectAttraction(a),
+              ),
+            );
+          },
+        );
+    }
   }
 }

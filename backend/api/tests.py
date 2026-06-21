@@ -76,16 +76,122 @@ class AllApiTests(APITestCase):
         item_id = post_resp.data['id']
         self.assertEqual(self.client.delete(f'/api/v1/events/{event_id}/itinerary/{item_id}/').status_code, status.HTTP_204_NO_CONTENT)
 
-    def test_polls(self):
-        # authenticate because poll endpoints require auth
-        User = get_user_model()
-        user = User.objects.create_user(email='poll_user@example.com', username='poller', password='password')
-        self.client.force_authenticate(user=user)
 
-        self.assertEqual(self.client.post('/api/v1/events/e-1/polls/').status_code, status.HTTP_201_CREATED)
-        self.assertEqual(self.client.post('/api/v1/events/e-1/polls/p-1/options/').status_code, status.HTTP_201_CREATED)
-        self.assertEqual(self.client.post('/api/v1/events/e-1/polls/p-1/vote/').status_code, status.HTTP_200_OK)
-        self.assertEqual(self.client.put('/api/v1/events/e-1/polls/p-1/close/').status_code, status.HTTP_200_OK)
+class PollTests(APITestCase):
+    def setUp(self):
+        from api.models import Event, Membership
+        self.Membership = Membership
+        self.owner = User.objects.create_user(email='poll_owner@x.com', username='pollowner', password='Pass!')
+        self.member = User.objects.create_user(email='poll_member@x.com', username='pollmember', password='Pass!')
+        self.outsider = User.objects.create_user(email='poll_out@x.com', username='pollout', password='Pass!')
+        self.event = Event.objects.create(
+            title='Poll Trip', destination_city='Sopot', destination_country='Poland',
+            start_date='2026-06-01', end_date='2026-06-05', created_by=self.owner,
+        )
+        Membership.objects.create(user=self.owner, event=self.event, role=Membership.Role.OWNER)
+        Membership.objects.create(user=self.member, event=self.event, role=Membership.Role.MEMBER)
+        self.url = f'/api/v1/events/{self.event.id}/polls/'
+
+    def _create_poll(self, user, options=None):
+        self.client.force_authenticate(user=user)
+        return self.client.post(self.url, {'question': 'Czym jedziemy?', 'options': options or ['Pociąg', 'Samochód']}, format='json')
+
+    def test_non_member_cannot_list_polls(self):
+        self.client.force_authenticate(user=self.outsider)
+        self.assertEqual(self.client.get(self.url).status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_create_poll_with_options(self):
+        resp = self._create_poll(self.owner)
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(resp.data['question'], 'Czym jedziemy?')
+        self.assertEqual(len(resp.data['options']), 2)
+        self.assertFalse(resp.data['is_closed'])
+
+    def test_create_poll_requires_question(self):
+        self.client.force_authenticate(user=self.owner)
+        resp = self.client.post(self.url, {'question': '   '}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_member_can_add_custom_option(self):
+        poll_id = self._create_poll(self.owner).data['id']
+        self.client.force_authenticate(user=self.member)
+        resp = self.client.post(f'{self.url}{poll_id}/options/', {'text': 'Autobus'}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(resp.data['text'], 'Autobus')
+        self.assertEqual(resp.data['item_type'], 'OTHER')
+
+    def test_member_can_add_api_sourced_option(self):
+        poll_id = self._create_poll(self.owner).data['id']
+        self.client.force_authenticate(user=self.member)
+        resp = self.client.post(
+            f'{self.url}{poll_id}/options/',
+            {
+                'text': 'Hotel Bristol',
+                'item_type': 'HOTEL',
+                'description': 'Ocena 4.5 • od 300 PLN/noc',
+                'location_lat': 52.24,
+                'location_lon': 21.01,
+            },
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(resp.data['item_type'], 'HOTEL')
+        self.assertEqual(resp.data['description'], 'Ocena 4.5 • od 300 PLN/noc')
+        self.assertAlmostEqual(resp.data['location_lat'], 52.24)
+
+    def test_create_poll_with_api_option_dicts(self):
+        self.client.force_authenticate(user=self.owner)
+        resp = self.client.post(
+            self.url,
+            {
+                'question': 'Gdzie nocujemy?',
+                'options': [
+                    {'text': 'Hotel A', 'item_type': 'HOTEL', 'description': 'od 200 PLN'},
+                    'Hostel tekstowy',
+                ],
+            },
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(len(resp.data['options']), 2)
+        types = {o['item_type'] for o in resp.data['options']}
+        self.assertIn('HOTEL', types)
+        self.assertIn('OTHER', types)
+
+    def test_voting_and_counts(self):
+        poll = self._create_poll(self.owner).data
+        option_id = poll['options'][0]['id']
+        self.client.force_authenticate(user=self.member)
+        resp = self.client.post(f'{self.url}{poll["id"]}/vote/', {'option_id': option_id}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data['total_votes'], 1)
+        self.assertEqual(resp.data['my_vote'], option_id)
+
+    def test_vote_change_is_idempotent_per_user(self):
+        poll = self._create_poll(self.owner).data
+        opt_a, opt_b = poll['options'][0]['id'], poll['options'][1]['id']
+        self.client.force_authenticate(user=self.member)
+        self.client.post(f'{self.url}{poll["id"]}/vote/', {'option_id': opt_a}, format='json')
+        resp = self.client.post(f'{self.url}{poll["id"]}/vote/', {'option_id': opt_b}, format='json')
+        self.assertEqual(resp.data['total_votes'], 1)
+        self.assertEqual(resp.data['my_vote'], opt_b)
+
+    def test_close_poll_blocks_voting(self):
+        poll = self._create_poll(self.owner).data
+        option_id = poll['options'][0]['id']
+        self.client.force_authenticate(user=self.owner)
+        close = self.client.put(f'{self.url}{poll["id"]}/close/')
+        self.assertEqual(close.status_code, status.HTTP_200_OK)
+        self.assertTrue(close.data['is_closed'])
+        self.client.force_authenticate(user=self.member)
+        vote = self.client.post(f'{self.url}{poll["id"]}/vote/', {'option_id': option_id}, format='json')
+        self.assertEqual(vote.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_member_cannot_close_others_poll(self):
+        poll = self._create_poll(self.owner).data
+        self.client.force_authenticate(user=self.member)
+        resp = self.client.put(f'{self.url}{poll["id"]}/close/')
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
 
 
 class ChatTests(APITestCase):

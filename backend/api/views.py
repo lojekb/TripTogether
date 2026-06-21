@@ -6,8 +6,11 @@ from rest_framework import status, generics, permissions
 import requests
 from django.conf import settings
 
-from .models import Event, User, Membership, Invitation, ItineraryItem, ChatMessage
-from .serializers import EventSerializer, UserRegistrationSerializer, ItineraryItemSerializer, ChatMessageSerializer
+from .models import Event, User, Membership, Invitation, ItineraryItem, ChatMessage, Poll, PollOption, Vote
+from .serializers import (
+    EventSerializer, UserRegistrationSerializer, ItineraryItemSerializer,
+    ChatMessageSerializer, PollSerializer, PollOptionSerializer,
+)
 
 # 1. AUTH & USERS
 class RegistrationView(generics.CreateAPIView):
@@ -250,29 +253,128 @@ def search_attractions(request):
         
     return Response(attractions, status=status.HTTP_200_OK)
 # 6. POLLS
-@api_view(['POST'])
-def poll_create(request, event_id):
-    if not request.user or not request.user.is_authenticated:
-        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
-    return Response({"id": "poll-1", "question": "How are we traveling?"}, status=status.HTTP_201_CREATED)
+def _get_event_for_member(request, event_id):
+    """Return (event, error_response). error_response is None when access is allowed."""
+    try:
+        event = Event.objects.get(pk=event_id)
+    except (Event.DoesNotExist, ValueError):
+        return None, Response({"detail": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
+    if not request.user.is_authenticated or not Membership.objects.filter(user=request.user, event=event).exists():
+        return None, Response({"detail": "Not authorized for this event."}, status=status.HTTP_403_FORBIDDEN)
+    return event, None
+
+
+def _coerce_float(value):
+    try:
+        return float(value) if value is not None and value != '' else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _create_option_from_payload(poll, raw, user):
+    """Create a PollOption from either a plain string or a rich dict (API item)."""
+    if isinstance(raw, dict):
+        text = str(raw.get('text') or '').strip()
+        if not text:
+            return None
+        return PollOption.objects.create(
+            poll=poll,
+            text=text[:255],
+            item_type=(raw.get('item_type') or PollOption.ItemType.OTHER),
+            description=(raw.get('description') or '').strip(),
+            location_lat=_coerce_float(raw.get('location_lat')),
+            location_lon=_coerce_float(raw.get('location_lon')),
+            created_by=user,
+        )
+    text = str(raw).strip()
+    if not text:
+        return None
+    return PollOption.objects.create(poll=poll, text=text[:255], created_by=user)
+
+
+@api_view(['GET', 'POST'])
+def poll_list_create(request, event_id):
+    event, error = _get_event_for_member(request, event_id)
+    if error:
+        return error
+
+    if request.method == 'POST':
+        question = (request.data.get('question') or '').strip()
+        if not question:
+            return Response({"detail": "Pytanie ankiety jest wymagane."}, status=status.HTTP_400_BAD_REQUEST)
+        poll = Poll.objects.create(event=event, question=question, created_by=request.user)
+        for raw in request.data.get('options', []) or []:
+            _create_option_from_payload(poll, raw, request.user)
+        return Response(PollSerializer(poll, context={'request': request}).data, status=status.HTTP_201_CREATED)
+
+    polls = (
+        event.polls
+        .select_related('created_by')
+        .prefetch_related('options__votes')
+    )
+    return Response(PollSerializer(polls, many=True, context={'request': request}).data, status=status.HTTP_200_OK)
+
 
 @api_view(['POST'])
 def poll_option_create(request, event_id, poll_id):
-    if not request.user or not request.user.is_authenticated:
-        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
-    return Response({"id": "opt-1", "text": "Train"}, status=status.HTTP_201_CREATED)
+    event, error = _get_event_for_member(request, event_id)
+    if error:
+        return error
+    try:
+        poll = Poll.objects.get(pk=poll_id, event=event)
+    except (Poll.DoesNotExist, ValueError):
+        return Response({"detail": "Poll not found."}, status=status.HTTP_404_NOT_FOUND)
+    if poll.is_closed:
+        return Response({"detail": "Ankieta jest zamknięta."}, status=status.HTTP_400_BAD_REQUEST)
+
+    text = (request.data.get('text') or '').strip()
+    if not text:
+        return Response({"detail": "Treść propozycji jest wymagana."}, status=status.HTTP_400_BAD_REQUEST)
+    option = _create_option_from_payload(poll, request.data, request.user)
+    return Response(PollOptionSerializer(option, context={'request': request}).data, status=status.HTTP_201_CREATED)
+
 
 @api_view(['POST'])
 def poll_vote(request, event_id, poll_id):
-    if not request.user or not request.user.is_authenticated:
-        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
-    return Response({"message": "Vote recorded"}, status=status.HTTP_200_OK)
+    event, error = _get_event_for_member(request, event_id)
+    if error:
+        return error
+    try:
+        poll = Poll.objects.get(pk=poll_id, event=event)
+    except (Poll.DoesNotExist, ValueError):
+        return Response({"detail": "Poll not found."}, status=status.HTTP_404_NOT_FOUND)
+    if poll.is_closed:
+        return Response({"detail": "Ankieta jest zamknięta."}, status=status.HTTP_400_BAD_REQUEST)
+
+    option_id = request.data.get('option_id') or request.data.get('option')
+    try:
+        option = PollOption.objects.get(pk=option_id, poll=poll)
+    except (PollOption.DoesNotExist, ValueError, TypeError):
+        return Response({"detail": "Nieprawidłowa opcja."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # One vote per user per poll; voting again changes the choice.
+    Vote.objects.update_or_create(poll=poll, user=request.user, defaults={'option': option})
+    return Response(PollSerializer(poll, context={'request': request}).data, status=status.HTTP_200_OK)
+
 
 @api_view(['PUT'])
 def poll_close(request, event_id, poll_id):
-    if not request.user or not request.user.is_authenticated:
-        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
-    return Response({"message": "Poll closed"}, status=status.HTTP_200_OK)
+    event, error = _get_event_for_member(request, event_id)
+    if error:
+        return error
+    try:
+        poll = Poll.objects.get(pk=poll_id, event=event)
+    except (Poll.DoesNotExist, ValueError):
+        return Response({"detail": "Poll not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    membership = Membership.objects.filter(user=request.user, event=event).first()
+    is_privileged = membership and membership.role in (Membership.Role.OWNER, Membership.Role.ADMIN)
+    if poll.created_by_id != request.user.id and not is_privileged:
+        return Response({"detail": "Tylko autor ankiety lub organizator może ją zamknąć."}, status=status.HTTP_403_FORBIDDEN)
+
+    poll.is_closed = True
+    poll.save(update_fields=['is_closed'])
+    return Response(PollSerializer(poll, context={'request': request}).data, status=status.HTTP_200_OK)
 
 # 7. CHAT
 @api_view(['GET', 'POST'])

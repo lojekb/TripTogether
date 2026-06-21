@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
-from .models import Event, ItineraryItem
+from .models import Event, ItineraryItem, ChatMessage
 
 class EventSerializer(serializers.ModelSerializer):
     class Meta:
@@ -55,3 +55,18 @@ class ItineraryItemSerializer(serializers.ModelSerializer):
         model = ItineraryItem
         fields = '__all__'
         read_only_fields = ('created_by', 'event', 'created_at')
+
+
+class ChatMessageSerializer(serializers.ModelSerializer):
+    sender_id = serializers.IntegerField(source='sender.id', read_only=True)
+    sender_username = serializers.CharField(source='sender.username', read_only=True)
+
+    class Meta:
+        model = ChatMessage
+        fields = ('id', 'content', 'created_at', 'sender_id', 'sender_username')
+        read_only_fields = ('id', 'created_at', 'sender_id', 'sender_username')
+
+    def validate_content(self, value):
+        if not value or not value.strip():
+            raise serializers.ValidationError("Wiadomość nie może być pusta.")
+        return value.strip()

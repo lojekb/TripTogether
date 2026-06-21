@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -47,7 +48,7 @@ class EventDetailsScreen extends StatelessWidget {
               initialCity: event['destination_city'] ?? '',
             ),
             ItineraryView(eventId: event['id'].toString()),
-            const Center(child: Text('Czat wydarzenia')),
+            ChatView(eventId: event['id'].toString()),
           ],
         ),
       ),
@@ -1491,6 +1492,276 @@ class _AttractionsSearchViewState extends State<AttractionsSearchView> {
               },
             ),
           ),
+      ],
+    );
+  }
+}
+
+class ChatView extends StatefulWidget {
+  final String eventId;
+
+  const ChatView({super.key, required this.eventId});
+
+  @override
+  State<ChatView> createState() => _ChatViewState();
+}
+
+class _ChatViewState extends State<ChatView> {
+  final TextEditingController _controller = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
+
+  List<dynamic> _messages = [];
+  bool _isLoading = true;
+  bool _sending = false;
+  String? _errorMessage;
+  Timer? _pollTimer;
+
+  String get _baseUrl => kIsWeb ? 'http://127.0.0.1:8000' : 'http://10.0.2.2:8000';
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchMessages();
+    // Lekki polling, aby na bieżąco pobierać nowe wiadomości od innych uczestników.
+    _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) => _fetchMessages(silent: true));
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    _controller.dispose();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  Map<String, String> _headers(AuthState authState, {bool json = false}) {
+    return {
+      if (json) 'Content-Type': 'application/json',
+      if (authState.token != null) 'Authorization': 'Token ${authState.token}',
+    };
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  Future<void> _fetchMessages({bool silent = false}) async {
+    final authState = Provider.of<AuthState>(context, listen: false);
+    if (!silent) {
+      setState(() {
+        _isLoading = true;
+        _errorMessage = null;
+      });
+    }
+
+    try {
+      final response = await http.get(
+        Uri.parse('$_baseUrl/api/v1/events/${widget.eventId}/messages/'),
+        headers: _headers(authState),
+      );
+
+      if (!mounted) return;
+
+      if (response.statusCode == 200) {
+        final decoded = jsonDecode(response.body);
+        final newMessages = decoded is List ? decoded : <dynamic>[];
+        final hadMore = newMessages.length != _messages.length;
+        setState(() {
+          _messages = newMessages;
+          _isLoading = false;
+          _errorMessage = null;
+        });
+        if (hadMore) _scrollToBottom();
+      } else if (!silent) {
+        setState(() {
+          _isLoading = false;
+          _errorMessage = 'Nie udało się pobrać wiadomości (${response.statusCode}).';
+        });
+      }
+    } catch (e) {
+      if (!mounted || silent) return;
+      setState(() {
+        _isLoading = false;
+        _errorMessage = 'Błąd połączenia: $e';
+      });
+    }
+  }
+
+  Future<void> _sendMessage() async {
+    final text = _controller.text.trim();
+    if (text.isEmpty || _sending) return;
+
+    final authState = Provider.of<AuthState>(context, listen: false);
+    setState(() => _sending = true);
+
+    try {
+      final response = await http.post(
+        Uri.parse('$_baseUrl/api/v1/events/${widget.eventId}/messages/'),
+        headers: _headers(authState, json: true),
+        body: jsonEncode({'content': text}),
+      );
+
+      if (!mounted) return;
+
+      if (response.statusCode == 201) {
+        _controller.clear();
+        await _fetchMessages(silent: true);
+        _scrollToBottom();
+      } else {
+        String msg = 'Nie udało się wysłać wiadomości (${response.statusCode}).';
+        try {
+          final decoded = jsonDecode(response.body);
+          if (decoded is Map && decoded['detail'] is String) msg = decoded['detail'] as String;
+        } catch (_) {}
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Błąd połączenia: $e')));
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
+  }
+
+  String _formatTime(String? iso) {
+    if (iso == null) return '';
+    try {
+      return DateFormat('HH:mm').format(DateTime.parse(iso).toLocal());
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Widget _buildBubble(Map<String, dynamic> message, bool isMine) {
+    final username = (message['sender_username'] as String?) ?? 'Użytkownik';
+    final content = (message['content'] as String?) ?? '';
+    final time = _formatTime(message['created_at'] as String?);
+
+    return Align(
+      alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        constraints: const BoxConstraints(maxWidth: 280),
+        decoration: BoxDecoration(
+          color: isMine ? Colors.blueAccent : Colors.grey.shade200,
+          borderRadius: BorderRadius.only(
+            topLeft: const Radius.circular(16),
+            topRight: const Radius.circular(16),
+            bottomLeft: Radius.circular(isMine ? 16 : 4),
+            bottomRight: Radius.circular(isMine ? 4 : 16),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: isMine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+          children: [
+            if (!isMine)
+              Text(
+                username,
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.black87),
+              ),
+            Text(
+              content,
+              style: TextStyle(color: isMine ? Colors.white : Colors.black87),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              time,
+              style: TextStyle(
+                fontSize: 10,
+                color: isMine ? Colors.white70 : Colors.black54,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final authState = Provider.of<AuthState>(context, listen: false);
+    final currentUserId = authState.currentUser?.id;
+
+    return Column(
+      children: [
+        Expanded(
+          child: Builder(
+            builder: (context) {
+              if (_isLoading) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              if (_errorMessage != null) {
+                return Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(_errorMessage!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.red)),
+                        const SizedBox(height: 8),
+                        ElevatedButton(onPressed: _fetchMessages, child: const Text('Ponów')),
+                      ],
+                    ),
+                  ),
+                );
+              }
+              if (_messages.isEmpty) {
+                return const Center(child: Text('Brak wiadomości. Napisz pierwszą!'));
+              }
+              return ListView.builder(
+                controller: _scrollController,
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                itemCount: _messages.length,
+                itemBuilder: (context, index) {
+                  final message = (_messages[index] as Map).cast<String, dynamic>();
+                  final senderId = (message['sender_id'] as num?)?.toInt();
+                  final isMine = currentUserId != null && senderId == currentUserId;
+                  return _buildBubble(message, isMine);
+                },
+              );
+            },
+          ),
+        ),
+        const Divider(height: 1),
+        Padding(
+          padding: const EdgeInsets.all(8.0),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _controller,
+                  enabled: !_sending,
+                  minLines: 1,
+                  maxLines: 4,
+                  textInputAction: TextInputAction.send,
+                  onSubmitted: (_) => _sendMessage(),
+                  decoration: const InputDecoration(
+                    hintText: 'Napisz wiadomość...',
+                    border: OutlineInputBorder(),
+                    contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton.filled(
+                onPressed: _sending ? null : _sendMessage,
+                icon: _sending
+                    ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.send),
+                tooltip: 'Wyślij',
+              ),
+            ],
+          ),
+        ),
       ],
     );
   }

@@ -125,3 +125,22 @@ class ItineraryItem(models.Model):
 
     def __str__(self):
         return f"{self.title} ({self.item_type})"
+
+
+class ChatMessage(models.Model):
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='messages')
+    sender = models.ForeignKey(
+        'api.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='chat_messages',
+    )
+    content = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['created_at']
+
+    def __str__(self):
+        sender = self.sender.username if self.sender else 'unknown'
+        return f"{sender} @ {self.event_id}: {self.content[:30]}"

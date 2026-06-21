@@ -76,7 +76,7 @@ class AllApiTests(APITestCase):
         item_id = post_resp.data['id']
         self.assertEqual(self.client.delete(f'/api/v1/events/{event_id}/itinerary/{item_id}/').status_code, status.HTTP_204_NO_CONTENT)
 
-    def test_polls_and_chat(self):
+    def test_polls(self):
         # authenticate because poll endpoints require auth
         User = get_user_model()
         user = User.objects.create_user(email='poll_user@example.com', username='poller', password='password')
@@ -86,7 +86,67 @@ class AllApiTests(APITestCase):
         self.assertEqual(self.client.post('/api/v1/events/e-1/polls/p-1/options/').status_code, status.HTTP_201_CREATED)
         self.assertEqual(self.client.post('/api/v1/events/e-1/polls/p-1/vote/').status_code, status.HTTP_200_OK)
         self.assertEqual(self.client.put('/api/v1/events/e-1/polls/p-1/close/').status_code, status.HTTP_200_OK)
-        self.assertEqual(self.client.get('/api/v1/events/e-1/messages/').status_code, status.HTTP_200_OK)
+
+
+class ChatTests(APITestCase):
+    def setUp(self):
+        from api.models import Event, Membership
+        self.Membership = Membership
+        self.owner = User.objects.create_user(email='chat_owner@x.com', username='chatowner', password='Pass!')
+        self.member = User.objects.create_user(email='chat_member@x.com', username='chatmember', password='Pass!')
+        self.outsider = User.objects.create_user(email='chat_out@x.com', username='chatout', password='Pass!')
+        self.event = Event.objects.create(
+            title='Chat Trip', destination_city='Gdynia', destination_country='Poland',
+            start_date='2026-06-01', end_date='2026-06-05', created_by=self.owner,
+        )
+        Membership.objects.create(user=self.owner, event=self.event, role=Membership.Role.OWNER)
+        Membership.objects.create(user=self.member, event=self.event, role=Membership.Role.MEMBER)
+        self.url = f'/api/v1/events/{self.event.id}/messages/'
+
+    def test_chat_requires_auth(self):
+        self.assertEqual(self.client.get(self.url).status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_non_member_cannot_read_chat(self):
+        self.client.force_authenticate(user=self.outsider)
+        self.assertEqual(self.client.get(self.url).status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_member_can_read_empty_chat(self):
+        self.client.force_authenticate(user=self.member)
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data, [])
+
+    def test_member_can_post_message(self):
+        self.client.force_authenticate(user=self.member)
+        resp = self.client.post(self.url, {'content': 'Cześć wszystkim!'}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(resp.data['content'], 'Cześć wszystkim!')
+        self.assertEqual(resp.data['sender_id'], self.member.id)
+        self.assertEqual(resp.data['sender_username'], 'chatmember')
+
+    def test_non_member_cannot_post_message(self):
+        self.client.force_authenticate(user=self.outsider)
+        resp = self.client.post(self.url, {'content': 'Hej'}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_empty_message_rejected(self):
+        self.client.force_authenticate(user=self.member)
+        resp = self.client.post(self.url, {'content': '   '}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_messages_returned_in_order(self):
+        self.client.force_authenticate(user=self.owner)
+        self.client.post(self.url, {'content': 'pierwsza'}, format='json')
+        self.client.force_authenticate(user=self.member)
+        self.client.post(self.url, {'content': 'druga'}, format='json')
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual([m['content'] for m in resp.data], ['pierwsza', 'druga'])
+
+    def test_chat_on_missing_event_returns_404(self):
+        self.client.force_authenticate(user=self.member)
+        resp = self.client.get('/api/v1/events/999999/messages/')
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
 
 
 User = get_user_model()

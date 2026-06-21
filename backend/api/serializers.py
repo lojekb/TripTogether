@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
-from .models import Event, ItineraryItem, ChatMessage
+from .models import Event, ItineraryItem, ChatMessage, Poll, PollOption
 
 class EventSerializer(serializers.ModelSerializer):
     class Meta:
@@ -70,3 +70,43 @@ class ChatMessageSerializer(serializers.ModelSerializer):
         if not value or not value.strip():
             raise serializers.ValidationError("Wiadomość nie może być pusta.")
         return value.strip()
+
+
+class PollOptionSerializer(serializers.ModelSerializer):
+    vote_count = serializers.SerializerMethodField()
+    created_by_username = serializers.CharField(source='created_by.username', read_only=True)
+
+    class Meta:
+        model = PollOption
+        fields = ('id', 'text', 'created_by_username', 'vote_count')
+        read_only_fields = fields
+
+    def get_vote_count(self, obj):
+        return obj.votes.count()
+
+
+class PollSerializer(serializers.ModelSerializer):
+    options = PollOptionSerializer(many=True, read_only=True)
+    created_by_username = serializers.CharField(source='created_by.username', read_only=True)
+    created_by_id = serializers.IntegerField(source='created_by.id', read_only=True)
+    total_votes = serializers.SerializerMethodField()
+    my_vote = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Poll
+        fields = (
+            'id', 'question', 'is_closed', 'created_at',
+            'created_by_id', 'created_by_username',
+            'options', 'total_votes', 'my_vote',
+        )
+        read_only_fields = fields
+
+    def get_total_votes(self, obj):
+        return sum(opt.votes.count() for opt in obj.options.all())
+
+    def get_my_vote(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user or not request.user.is_authenticated:
+            return None
+        vote = obj.votes.filter(user=request.user).first()
+        return vote.option_id if vote else None

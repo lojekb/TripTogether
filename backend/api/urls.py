@@ -20,7 +20,7 @@ urlpatterns = [
 
     path('attractions/search/', views.search_attractions, name='search_attractions'),
 
-    path('events/<str:event_id>/polls/', views.poll_create, name='poll_create'),
+    path('events/<str:event_id>/polls/', views.poll_list_create, name='poll_list_create'),
     path('events/<str:event_id>/polls/<str:poll_id>/options/', views.poll_option_create, name='poll_option_create'),
     path('events/<str:event_id>/polls/<str:poll_id>/vote/', views.poll_vote, name='poll_vote'),
     path('events/<str:event_id>/polls/<str:poll_id>/close/', views.poll_close, name='poll_close'),

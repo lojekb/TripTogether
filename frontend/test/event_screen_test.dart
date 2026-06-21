@@ -27,13 +27,13 @@ void main() {
   testWidgets('login button visible when not logged in', (tester) async {
     await tester.pumpWidget(_buildApp());
     await tester.pump();
-    expect(find.widgetWithText(ElevatedButton, 'Login'), findsOneWidget);
+    expect(find.widgetWithText(TextButton, 'Login'), findsOneWidget);
   });
 
   testWidgets('register button visible when not logged in', (tester) async {
     await tester.pumpWidget(_buildApp());
     await tester.pump();
-    expect(find.widgetWithText(ElevatedButton, 'Register'), findsOneWidget);
+    expect(find.widgetWithText(TextButton, 'Register'), findsOneWidget);
   });
 
   testWidgets('spinner not shown when not logged in', (tester) async {

@@ -31,10 +31,18 @@ class ApiService {
     }
   }
 
-  Future<Map<String, dynamic>?> generateInvitation(String eventId, {required String authToken}) async {
+  Future<Map<String, dynamic>?> generateInvitation(
+    String eventId, {
+    required String authToken,
+  }) async {
     try {
-      final url = Uri.parse('${ApiConstants.baseUrl}/events/$eventId/invitations/');
-      final response = await _client.post(url, headers: {'Authorization': 'Token $authToken'});
+      final url = Uri.parse(
+        '${ApiConstants.baseUrl}/events/$eventId/invitations/',
+      );
+      final response = await _client.post(
+        url,
+        headers: {'Authorization': 'Token $authToken'},
+      );
       if (response.statusCode == 201) {
         return jsonDecode(response.body) as Map<String, dynamic>;
       }
@@ -64,10 +72,52 @@ class ApiService {
   Future<bool> joinEvent(String token, {required String authToken}) async {
     try {
       final url = Uri.parse('${ApiConstants.baseUrl}/invitations/$token/join/');
-      final response = await _client.post(url, headers: {'Authorization': 'Token $authToken'});
+      final response = await _client.post(
+        url,
+        headers: {'Authorization': 'Token $authToken'},
+      );
       return response.statusCode == 201;
     } catch (e) {
       debugPrint('joinEvent błąd połączenia: $e');
+      return false;
+    }
+  }
+
+  Future<List<dynamic>> getNotifications({required String authToken}) async {
+    try {
+      final url = Uri.parse(
+        ApiConstants.baseUrl + ApiConstants.notificationsEndpoint,
+      );
+      final response = await _client.get(
+        url,
+        headers: {'Authorization': 'Token $authToken'},
+      );
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as List<dynamic>;
+      }
+      debugPrint('getNotifications błąd: ${response.statusCode}');
+      return [];
+    } catch (e) {
+      debugPrint('getNotifications błąd połączenia: $e');
+      return [];
+    }
+  }
+
+  Future<bool> markNotificationRead({
+    required String authToken,
+    required String notificationId,
+  }) async {
+    try {
+      final url = Uri.parse(
+        '${ApiConstants.baseUrl}${ApiConstants.notificationsEndpoint}$notificationId/read/',
+      );
+      final response = await _client.put(
+        url,
+        headers: {'Authorization': 'Token $authToken'},
+      );
+      return response.statusCode == 200;
+    } catch (e) {
+      debugPrint('markNotificationRead błąd połączenia: $e');
       return false;
     }
   }

@@ -6,10 +6,10 @@ from rest_framework import status, generics, permissions
 import requests
 from django.conf import settings
 
-from .models import Event, User, Membership, Invitation, ItineraryItem, ChatMessage, Poll, PollOption, Vote
+from .models import Event, User, Membership, Invitation, ItineraryItem, ChatMessage, Poll, PollOption, Vote, Notification
 from .serializers import (
     EventSerializer, UserRegistrationSerializer, ItineraryItemSerializer,
-    ChatMessageSerializer, PollSerializer, PollOptionSerializer,
+    ChatMessageSerializer, PollSerializer, PollOptionSerializer, NotificationSerializer,
 )
 
 # 1. AUTH & USERS
@@ -62,6 +62,43 @@ def user_profile(request):
     # For PUT: here we just return a success message (update logic not implemented)
     return Response({"message": "Profile updated"}, status=status.HTTP_200_OK)
 
+
+def _notify_event_members(event, notification_type, title, message, actor=None, poll=None, exclude_actor=True):
+    recipients = Membership.objects.filter(event=event).select_related('user')
+    if exclude_actor and actor is not None:
+        recipients = recipients.exclude(user=actor)
+
+    notifications = [
+        Notification(
+            recipient=membership.user,
+            event=event,
+            poll=poll,
+            actor=actor,
+            notification_type=notification_type,
+            title=title,
+            message=message,
+        )
+        for membership in recipients
+    ]
+    if notifications:
+        Notification.objects.bulk_create(notifications)
+
+
+def _get_event_with_member_access(request, event_id):
+    try:
+        event = Event.objects.get(pk=event_id)
+    except (Event.DoesNotExist, ValueError):
+        return None, Response({"detail": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    if not request.user or not request.user.is_authenticated:
+        return None, Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    membership = Membership.objects.filter(user=request.user, event=event).first()
+    if not membership:
+        return None, Response({"detail": "Not authorized for this event."}, status=status.HTTP_403_FORBIDDEN)
+
+    return event, membership
+
 # 2. EVENTS
 @api_view(['GET', 'POST'])
 def event_list_create(request):
@@ -83,12 +120,32 @@ def event_list_create(request):
 
 @api_view(['GET', 'PUT'])
 def event_detail_update(request, event_id):
+    event, membership_or_error = _get_event_with_member_access(request, event_id)
+    if event is None:
+        return membership_or_error
+
     if request.method == 'GET':
-        return Response({"id": event_id, "title": "May trip to Rome", "city": "Rome"}, status=status.HTTP_200_OK)
-    # PUT should require authentication
-    if not request.user or not request.user.is_authenticated:
-        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
-    return Response({"message": "Event updated"}, status=status.HTTP_200_OK)
+        return Response(EventSerializer(event).data, status=status.HTTP_200_OK)
+
+    if membership_or_error.role not in (Membership.Role.OWNER, Membership.Role.ADMIN):
+        return Response({"detail": "Only event owners or admins can update the event."}, status=status.HTTP_403_FORBIDDEN)
+
+    serializer = EventSerializer(event, data=request.data, partial=True)
+    serializer.is_valid(raise_exception=True)
+
+    changed_fields = [field for field, value in serializer.validated_data.items() if getattr(event, field) != value]
+    updated_event = serializer.save()
+
+    if changed_fields:
+        _notify_event_members(
+            updated_event,
+            Notification.NotificationType.EVENT_UPDATED,
+            title=f'Wydarzenie "{updated_event.title}" zostało zaktualizowane',
+            message='Zmienione pola: ' + ', '.join(changed_fields),
+            actor=request.user,
+        )
+
+    return Response(EventSerializer(updated_event).data, status=status.HTTP_200_OK)
 
 # 3. INVITATIONS
 @api_view(['POST'])
@@ -305,6 +362,14 @@ def poll_list_create(request, event_id):
         poll = Poll.objects.create(event=event, question=question, created_by=request.user)
         for raw in request.data.get('options', []) or []:
             _create_option_from_payload(poll, raw, request.user)
+        _notify_event_members(
+            event,
+            Notification.NotificationType.POLL_CREATED,
+            title=f'Nowa ankieta w wydarzeniu "{event.title}"',
+            message=question,
+            actor=request.user,
+            poll=poll,
+        )
         return Response(PollSerializer(poll, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
     polls = (
@@ -331,6 +396,14 @@ def poll_option_create(request, event_id, poll_id):
     if not text:
         return Response({"detail": "Treść propozycji jest wymagana."}, status=status.HTTP_400_BAD_REQUEST)
     option = _create_option_from_payload(poll, request.data, request.user)
+    _notify_event_members(
+        event,
+        Notification.NotificationType.POLL_OPTION_ADDED,
+        title=f'Nowa propozycja do ankiety "{poll.question}"',
+        message=text,
+        actor=request.user,
+        poll=poll,
+    )
     return Response(PollOptionSerializer(option, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
 
@@ -374,7 +447,35 @@ def poll_close(request, event_id, poll_id):
 
     poll.is_closed = True
     poll.save(update_fields=['is_closed'])
+    _notify_event_members(
+        event,
+        Notification.NotificationType.POLL_CLOSED,
+        title=f'Ankieta "{poll.question}" została zamknięta',
+        message='Głosowanie zostało zakończone.',
+        actor=request.user,
+        poll=poll,
+    )
     return Response(PollSerializer(poll, context={'request': request}).data, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+def notification_list(request):
+    if not request.user or not request.user.is_authenticated:
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+    notifications = request.user.notifications.select_related('event', 'poll', 'actor')
+    return Response(NotificationSerializer(notifications, many=True).data, status=status.HTTP_200_OK)
+
+
+@api_view(['PUT'])
+def notification_mark_read(request, notification_id):
+    if not request.user or not request.user.is_authenticated:
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+    try:
+        notification = Notification.objects.select_related('event', 'poll', 'actor').get(pk=notification_id, recipient=request.user)
+    except Notification.DoesNotExist:
+        return Response({"detail": "Notification not found."}, status=status.HTTP_404_NOT_FOUND)
+    notification.mark_as_read()
+    return Response(NotificationSerializer(notification).data, status=status.HTTP_200_OK)
 
 # 7. CHAT
 @api_view(['GET', 'POST'])

@@ -194,6 +194,56 @@ class PollTests(APITestCase):
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
 
 
+class NotificationTests(APITestCase):
+    def setUp(self):
+        from api.models import Event, Membership
+        self.owner = User.objects.create_user(email='notif_owner@x.com', username='notifowner', password='Pass!')
+        self.member = User.objects.create_user(email='notif_member@x.com', username='notifmember', password='Pass!')
+        self.event = Event.objects.create(
+            title='Notif Trip', destination_city='Gdańsk', destination_country='Poland',
+            start_date='2026-07-01', end_date='2026-07-05', created_by=self.owner,
+        )
+        Membership.objects.create(user=self.owner, event=self.event, role=Membership.Role.OWNER)
+        Membership.objects.create(user=self.member, event=self.event, role=Membership.Role.MEMBER)
+        self.event_url = f'/api/v1/events/{self.event.id}/'
+        self.poll_url = f'/api/v1/events/{self.event.id}/polls/'
+        self.notifications_url = '/api/v1/notifications/'
+
+    def test_event_update_creates_notification_for_other_members(self):
+        self.client.force_authenticate(user=self.owner)
+        resp = self.client.put(self.event_url, {'title': 'Updated Trip'}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+        self.client.force_authenticate(user=self.member)
+        notifications = self.client.get(self.notifications_url)
+        self.assertEqual(notifications.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(notifications.data), 1)
+        self.assertEqual(notifications.data[0]['notification_type'], 'EVENT_UPDATED')
+        self.assertFalse(notifications.data[0]['is_read'])
+
+    def test_poll_create_creates_notification_for_other_members(self):
+        self.client.force_authenticate(user=self.owner)
+        resp = self.client.post(self.poll_url, {'question': 'Jak jedziemy?', 'options': ['Auto']}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+
+        self.client.force_authenticate(user=self.member)
+        notifications = self.client.get(self.notifications_url)
+        self.assertEqual(notifications.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(notifications.data), 1)
+        self.assertEqual(notifications.data[0]['notification_type'], 'POLL_CREATED')
+
+    def test_member_can_mark_notification_read(self):
+        self.client.force_authenticate(user=self.owner)
+        self.client.put(self.event_url, {'title': 'Updated Trip'}, format='json')
+
+        self.client.force_authenticate(user=self.member)
+        notifications = self.client.get(self.notifications_url)
+        notification_id = notifications.data[0]['id']
+        mark_read = self.client.put(f'{self.notifications_url}{notification_id}/read/')
+        self.assertEqual(mark_read.status_code, status.HTTP_200_OK)
+        self.assertTrue(mark_read.data['is_read'])
+
+
 class ChatTests(APITestCase):
     def setUp(self):
         from api.models import Event, Membership

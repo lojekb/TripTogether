@@ -118,6 +118,45 @@ class PollTests(APITestCase):
         resp = self.client.post(f'{self.url}{poll_id}/options/', {'text': 'Autobus'}, format='json')
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
         self.assertEqual(resp.data['text'], 'Autobus')
+        self.assertEqual(resp.data['item_type'], 'OTHER')
+
+    def test_member_can_add_api_sourced_option(self):
+        poll_id = self._create_poll(self.owner).data['id']
+        self.client.force_authenticate(user=self.member)
+        resp = self.client.post(
+            f'{self.url}{poll_id}/options/',
+            {
+                'text': 'Hotel Bristol',
+                'item_type': 'HOTEL',
+                'description': 'Ocena 4.5 • od 300 PLN/noc',
+                'location_lat': 52.24,
+                'location_lon': 21.01,
+            },
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(resp.data['item_type'], 'HOTEL')
+        self.assertEqual(resp.data['description'], 'Ocena 4.5 • od 300 PLN/noc')
+        self.assertAlmostEqual(resp.data['location_lat'], 52.24)
+
+    def test_create_poll_with_api_option_dicts(self):
+        self.client.force_authenticate(user=self.owner)
+        resp = self.client.post(
+            self.url,
+            {
+                'question': 'Gdzie nocujemy?',
+                'options': [
+                    {'text': 'Hotel A', 'item_type': 'HOTEL', 'description': 'od 200 PLN'},
+                    'Hostel tekstowy',
+                ],
+            },
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(len(resp.data['options']), 2)
+        types = {o['item_type'] for o in resp.data['options']}
+        self.assertIn('HOTEL', types)
+        self.assertIn('OTHER', types)
 
     def test_voting_and_counts(self):
         poll = self._create_poll(self.owner).data

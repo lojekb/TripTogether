@@ -49,7 +49,10 @@ class EventDetailsScreen extends StatelessWidget {
               initialCity: event['destination_city'] ?? '',
             ),
             ItineraryView(eventId: event['id'].toString()),
-            PollsView(eventId: event['id'].toString()),
+            PollsView(
+              eventId: event['id'].toString(),
+              destinationCity: event['destination_city'] ?? '',
+            ),
             ChatView(eventId: event['id'].toString()),
           ],
         ),
@@ -1791,8 +1794,9 @@ class _ChatViewState extends State<ChatView> {
 
 class PollsView extends StatefulWidget {
   final String eventId;
+  final String destinationCity;
 
-  const PollsView({super.key, required this.eventId});
+  const PollsView({super.key, required this.eventId, this.destinationCity = ''});
 
   @override
   State<PollsView> createState() => _PollsViewState();
@@ -1883,11 +1887,19 @@ class _PollsViewState extends State<PollsView> {
   Future<void> _addOption(String pollId, String text) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty) return;
+    await _postOption(pollId, {'text': trimmed});
+  }
+
+  Future<void> _addApiOption(String pollId, Map<String, dynamic> option) async {
+    await _postOption(pollId, option);
+  }
+
+  Future<void> _postOption(String pollId, Map<String, dynamic> body) async {
     try {
       final response = await http.post(
         Uri.parse('$_baseUrl/api/v1/events/${widget.eventId}/polls/$pollId/options/'),
         headers: _headers(json: true),
-        body: jsonEncode({'text': trimmed}),
+        body: jsonEncode(body),
       );
       if (!mounted) return;
       if (response.statusCode == 201) {
@@ -1897,6 +1909,17 @@ class _PollsViewState extends State<PollsView> {
       }
     } catch (e) {
       _snack('Błąd połączenia: $e');
+    }
+  }
+
+  Future<void> _pickApiOption(String pollId) async {
+    final selected = await showModalBottomSheet<Map<String, dynamic>>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => ApiOptionPicker(destinationCity: widget.destinationCity),
+    );
+    if (selected != null) {
+      await _addApiOption(pollId, selected);
     }
   }
 
@@ -1919,15 +1942,26 @@ class _PollsViewState extends State<PollsView> {
     }
   }
 
-  Future<void> _addOptionToPlan(String optionText, String pollQuestion) async {
+  Future<void> _addOptionToPlan(Map<String, dynamic> option, String pollQuestion) async {
+    final optionText = option['text'] ?? '';
+    final pollItemType = (option['item_type'] as String?) ?? 'OTHER';
+    // Plan obsługuje typy ATTRACTION / HOTEL / FLIGHT / OTHER; transport -> OTHER.
+    final planItemType = pollItemType == 'TRANSPORT' ? 'OTHER' : pollItemType;
+    final optionDescription = (option['description'] as String?)?.trim() ?? '';
+    final description = optionDescription.isNotEmpty
+        ? '$optionDescription\n(z ankiety: $pollQuestion)'
+        : 'Z ankiety: $pollQuestion';
+
     try {
       final response = await http.post(
         Uri.parse('$_baseUrl/api/v1/events/${widget.eventId}/itinerary/'),
         headers: _headers(json: true),
         body: jsonEncode({
           'title': optionText,
-          'item_type': 'OTHER',
-          'description': 'Z ankiety: $pollQuestion',
+          'item_type': planItemType,
+          'description': description,
+          if (option['location_lat'] != null) 'location_lat': option['location_lat'],
+          if (option['location_lon'] != null) 'location_lon': option['location_lon'],
         }),
       );
       if (!mounted) return;
@@ -1947,6 +1981,7 @@ class _PollsViewState extends State<PollsView> {
       TextEditingController(),
       TextEditingController(),
     ];
+    final apiOptions = <Map<String, dynamic>>[];
 
     final created = await showDialog<bool>(
       context: context,
@@ -1991,13 +2026,52 @@ class _PollsViewState extends State<PollsView> {
                         ),
                       );
                     }),
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: TextButton.icon(
-                        icon: const Icon(Icons.add),
-                        label: const Text('Dodaj opcję'),
-                        onPressed: () => setDialogState(() => optionControllers.add(TextEditingController())),
-                      ),
+                    ...apiOptions.asMap().entries.map((entry) {
+                      final opt = entry.value;
+                      return Card(
+                        color: const Color(0xFFF1F8E9),
+                        margin: const EdgeInsets.only(top: 8),
+                        child: ListTile(
+                          dense: true,
+                          leading: Icon(_iconForType(opt['item_type'] as String?), size: 20),
+                          title: Text(opt['text'] ?? ''),
+                          subtitle: (opt['description'] as String?)?.isNotEmpty == true
+                              ? Text(opt['description'], maxLines: 2, overflow: TextOverflow.ellipsis)
+                              : null,
+                          trailing: IconButton(
+                            icon: const Icon(Icons.remove_circle_outline),
+                            onPressed: () => setDialogState(() => apiOptions.removeAt(entry.key)),
+                          ),
+                        ),
+                      );
+                    }),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextButton.icon(
+                            icon: const Icon(Icons.add),
+                            label: const Text('Tekst'),
+                            onPressed: () => setDialogState(() => optionControllers.add(TextEditingController())),
+                          ),
+                        ),
+                        Expanded(
+                          child: TextButton.icon(
+                            icon: const Icon(Icons.travel_explore),
+                            label: const Text('Z API'),
+                            onPressed: () async {
+                              final selected = await showModalBottomSheet<Map<String, dynamic>>(
+                                context: context,
+                                isScrollControlled: true,
+                                builder: (_) => ApiOptionPicker(destinationCity: widget.destinationCity),
+                              );
+                              if (selected != null) {
+                                setDialogState(() => apiOptions.add(selected));
+                              }
+                            },
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
@@ -2017,10 +2091,10 @@ class _PollsViewState extends State<PollsView> {
       if (question.isEmpty) {
         _snack('Pytanie ankiety jest wymagane.');
       } else {
-        final options = optionControllers
-            .map((c) => c.text.trim())
-            .where((t) => t.isNotEmpty)
-            .toList();
+        final options = <dynamic>[
+          ...optionControllers.map((c) => c.text.trim()).where((t) => t.isNotEmpty),
+          ...apiOptions,
+        ];
         await _createPoll(question, options);
       }
     }
@@ -2030,7 +2104,20 @@ class _PollsViewState extends State<PollsView> {
     }
   }
 
-  Future<void> _createPoll(String question, List<String> options) async {
+  IconData _iconForType(String? itemType) {
+    switch (itemType) {
+      case 'TRANSPORT':
+        return Icons.directions_transit;
+      case 'HOTEL':
+        return Icons.hotel;
+      case 'ATTRACTION':
+        return Icons.local_activity;
+      default:
+        return Icons.label_outline;
+    }
+  }
+
+  Future<void> _createPoll(String question, List<dynamic> options) async {
     try {
       final response = await http.post(
         Uri.parse('$_baseUrl/api/v1/events/${widget.eventId}/polls/'),
@@ -2159,6 +2246,14 @@ class _PollsViewState extends State<PollsView> {
                   ),
                 ],
               ),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  icon: const Icon(Icons.travel_explore, size: 18),
+                  label: const Text('Dodaj z wyszukiwarki (transport / nocleg / atrakcje)'),
+                  onPressed: () => _pickApiOption(pollId),
+                ),
+              ),
             ],
             if (canClose)
               Align(
@@ -2188,6 +2283,8 @@ class _PollsViewState extends State<PollsView> {
     final isMyVote = myVote == optionId;
     final fraction = totalVotes > 0 ? voteCount / totalVotes : 0.0;
     final percent = (fraction * 100).round();
+    final itemType = option['item_type'] as String?;
+    final description = (option['description'] as String?)?.trim() ?? '';
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
@@ -2210,6 +2307,10 @@ class _PollsViewState extends State<PollsView> {
                           color: isMyVote ? Colors.blueAccent : Colors.grey,
                         ),
                         const SizedBox(width: 6),
+                        if (itemType != null && itemType != 'OTHER') ...[
+                          Icon(_iconForType(itemType), size: 16, color: Colors.blueGrey),
+                          const SizedBox(width: 4),
+                        ],
                         Expanded(
                           child: Text(
                             option['text'] ?? '',
@@ -2219,6 +2320,14 @@ class _PollsViewState extends State<PollsView> {
                         Text('$voteCount ($percent%)', style: const TextStyle(fontSize: 12, color: Colors.black54)),
                       ],
                     ),
+                    if (description.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(left: 24, top: 2),
+                        child: Text(
+                          description,
+                          style: const TextStyle(fontSize: 12, color: Colors.black54),
+                        ),
+                      ),
                     const SizedBox(height: 4),
                     ClipRRect(
                       borderRadius: BorderRadius.circular(4),
@@ -2236,10 +2345,328 @@ class _PollsViewState extends State<PollsView> {
           IconButton(
             icon: const Icon(Icons.playlist_add, color: Colors.green),
             tooltip: 'Dodaj do planu',
-            onPressed: () => _addOptionToPlan(option['text'] ?? '', poll['question'] ?? ''),
+            onPressed: () => _addOptionToPlan(option, poll['question'] ?? ''),
           ),
         ],
       ),
     );
+  }
+}
+
+enum _ApiOptionCategory { transport, hotel, attraction }
+
+class ApiOptionPicker extends StatefulWidget {
+  final String destinationCity;
+
+  const ApiOptionPicker({super.key, this.destinationCity = ''});
+
+  @override
+  State<ApiOptionPicker> createState() => _ApiOptionPickerState();
+}
+
+class _ApiOptionPickerState extends State<ApiOptionPicker> {
+  _ApiOptionCategory _category = _ApiOptionCategory.transport;
+
+  late final TextEditingController _fromController;
+  late final TextEditingController _toController;
+  late final TextEditingController _cityController;
+
+  late final TransportApi _transportApi;
+  late final HotelApi _hotelApi;
+
+  bool _isLoading = false;
+  String? _error;
+  List<Journey> _journeys = const [];
+  List<Hotel> _hotels = const [];
+  List<dynamic> _attractions = const [];
+
+  String get _baseUrl => kIsWeb ? 'http://127.0.0.1:8000' : 'http://10.0.2.2:8000';
+
+  @override
+  void initState() {
+    super.initState();
+    _fromController = TextEditingController();
+    _toController = TextEditingController(text: widget.destinationCity);
+    _cityController = TextEditingController(text: widget.destinationCity);
+    _transportApi = TransportApi(baseUrl: ApiEnvironment.baseUrl);
+    _hotelApi = HotelApi(baseUrl: ApiEnvironment.baseUrl);
+  }
+
+  @override
+  void dispose() {
+    _transportApi.cancelOngoing();
+    _hotelApi.cancelOngoing();
+    _fromController.dispose();
+    _toController.dispose();
+    _cityController.dispose();
+    super.dispose();
+  }
+
+  void _resetResults() {
+    _journeys = const [];
+    _hotels = const [];
+    _attractions = const [];
+  }
+
+  Future<void> _search() async {
+    setState(() {
+      _isLoading = true;
+      _error = null;
+      _resetResults();
+    });
+    try {
+      switch (_category) {
+        case _ApiOptionCategory.transport:
+          final from = _fromController.text.trim();
+          final to = _toController.text.trim();
+          if (from.isEmpty || to.isEmpty) {
+            throw 'Podaj miejsce początkowe i docelowe.';
+          }
+          final result = await _transportApi.searchTransport(from: from, to: to);
+          if (!mounted) return;
+          setState(() => _journeys = result.results);
+          break;
+        case _ApiOptionCategory.hotel:
+          final city = _cityController.text.trim();
+          if (city.isEmpty) throw 'Podaj miasto.';
+          final result = await _hotelApi.searchHotels(q: city);
+          if (!mounted) return;
+          setState(() => _hotels = result.results);
+          break;
+        case _ApiOptionCategory.attraction:
+          final city = _cityController.text.trim();
+          if (city.isEmpty) throw 'Podaj miasto.';
+          await _searchAttractions(city);
+          break;
+      }
+      if (mounted && _journeys.isEmpty && _hotels.isEmpty && _attractions.isEmpty && _error == null) {
+        setState(() => _error = 'Brak wyników.');
+      }
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    } catch (e) {
+      if (mounted) setState(() => _error = e.toString());
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _searchAttractions(String city) async {
+    final authState = Provider.of<AuthState>(context, listen: false);
+    final response = await http.get(
+      Uri.parse('$_baseUrl/api/v1/attractions/search/?city=${Uri.encodeComponent(city)}'),
+      headers: {
+        if (authState.token != null) 'Authorization': 'Token ${authState.token}',
+      },
+    );
+    if (!mounted) return;
+    if (response.statusCode == 200) {
+      final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+      List<dynamic> results = [];
+      if (decoded is List) {
+        results = decoded;
+      } else if (decoded is Map) {
+        results = decoded['data'] ?? decoded['features'] ?? decoded['results'] ?? [];
+      }
+      setState(() => _attractions = results);
+    } else {
+      setState(() => _error = 'Błąd wyszukiwania: ${response.statusCode}');
+    }
+  }
+
+  void _selectTransport(Journey j) {
+    final from = j.fromName ?? _fromController.text.trim();
+    final to = j.toName ?? _toController.text.trim();
+    final parts = <String>[];
+    if (j.durationText != null) parts.add(j.durationText!);
+    parts.add(j.transfers == 0 ? 'bez przesiadek' : 'przesiadki: ${j.transfers}');
+    if (j.departure != null && j.arrival != null) parts.add('${j.departure}–${j.arrival}');
+    Navigator.pop(context, <String, dynamic>{
+      'text': '$from → $to',
+      'item_type': 'TRANSPORT',
+      'description': parts.join(' • '),
+    });
+  }
+
+  void _selectHotel(Hotel h) {
+    final parts = <String>[];
+    if (h.accommodationType != null && h.accommodationType!.isNotEmpty) parts.add(h.accommodationType!);
+    if (h.review?.rating != null) parts.add('ocena ${h.review!.rating}');
+    final price = h.priceRanges?.minimum ?? (h.rates.isNotEmpty ? h.rates.first.perNight : null);
+    if (price != null) parts.add('od ${price.round()} za noc');
+    Navigator.pop(context, <String, dynamic>{
+      'text': h.name,
+      'item_type': 'HOTEL',
+      'description': parts.join(' • '),
+    });
+  }
+
+  void _selectAttraction(dynamic a) {
+    final name = a['name'] ?? a['title'] ?? 'Atrakcja';
+    final lat = a['lat'] != null ? (a['lat'] as num).toDouble() : null;
+    final rawLon = a['lon'] ?? a['lng'];
+    final lon = rawLon != null ? (rawLon as num).toDouble() : null;
+    final option = <String, dynamic>{
+      'text': name,
+      'item_type': 'ATTRACTION',
+      'description': 'Atrakcja w ${_cityController.text.trim()}',
+    };
+    if (lat != null) option['location_lat'] = lat;
+    if (lon != null) option['location_lon'] = lon;
+    Navigator.pop(context, option);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DraggableScrollableSheet(
+      initialChildSize: 0.85,
+      minChildSize: 0.5,
+      maxChildSize: 0.95,
+      expand: false,
+      builder: (context, scrollController) {
+        return Padding(
+          padding: EdgeInsets.only(
+            left: 16,
+            right: 16,
+            top: 16,
+            bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Dodaj opcję z wyszukiwarki', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                children: [
+                  ChoiceChip(
+                    label: const Text('Transport'),
+                    avatar: const Icon(Icons.directions_transit, size: 18),
+                    selected: _category == _ApiOptionCategory.transport,
+                    onSelected: (_) => setState(() {
+                      _category = _ApiOptionCategory.transport;
+                      _error = null;
+                      _resetResults();
+                    }),
+                  ),
+                  ChoiceChip(
+                    label: const Text('Nocleg'),
+                    avatar: const Icon(Icons.hotel, size: 18),
+                    selected: _category == _ApiOptionCategory.hotel,
+                    onSelected: (_) => setState(() {
+                      _category = _ApiOptionCategory.hotel;
+                      _error = null;
+                      _resetResults();
+                    }),
+                  ),
+                  ChoiceChip(
+                    label: const Text('Atrakcje'),
+                    avatar: const Icon(Icons.local_activity, size: 18),
+                    selected: _category == _ApiOptionCategory.attraction,
+                    onSelected: (_) => setState(() {
+                      _category = _ApiOptionCategory.attraction;
+                      _error = null;
+                      _resetResults();
+                    }),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              if (_category == _ApiOptionCategory.transport) ...[
+                TextField(
+                  controller: _fromController,
+                  decoration: const InputDecoration(labelText: 'Skąd', isDense: true, border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _toController,
+                  decoration: const InputDecoration(labelText: 'Dokąd', isDense: true, border: OutlineInputBorder()),
+                ),
+              ] else
+                TextField(
+                  controller: _cityController,
+                  decoration: const InputDecoration(labelText: 'Miasto', isDense: true, border: OutlineInputBorder()),
+                ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: _isLoading ? null : _search,
+                  icon: const Icon(Icons.search),
+                  label: const Text('Szukaj'),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Expanded(child: _buildResults(scrollController)),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildResults(ScrollController scrollController) {
+    if (_isLoading) return const Center(child: CircularProgressIndicator());
+    if (_error != null) return Center(child: Text(_error!, style: const TextStyle(color: Colors.red)));
+
+    switch (_category) {
+      case _ApiOptionCategory.transport:
+        return ListView.builder(
+          controller: scrollController,
+          itemCount: _journeys.length,
+          itemBuilder: (context, i) {
+            final j = _journeys[i];
+            return Card(
+              child: ListTile(
+                leading: const Icon(Icons.directions_transit, color: Colors.blueAccent),
+                title: Text('${j.fromName ?? _fromController.text} → ${j.toName ?? _toController.text}'),
+                subtitle: Text([
+                  if (j.durationText != null) j.durationText!,
+                  j.transfers == 0 ? 'bez przesiadek' : 'przesiadki: ${j.transfers}',
+                ].join(' • ')),
+                trailing: const Icon(Icons.add_circle, color: Colors.green),
+                onTap: () => _selectTransport(j),
+              ),
+            );
+          },
+        );
+      case _ApiOptionCategory.hotel:
+        return ListView.builder(
+          controller: scrollController,
+          itemCount: _hotels.length,
+          itemBuilder: (context, i) {
+            final h = _hotels[i];
+            final price = h.priceRanges?.minimum ?? (h.rates.isNotEmpty ? h.rates.first.perNight : null);
+            return Card(
+              child: ListTile(
+                leading: const Icon(Icons.hotel, color: Colors.blueAccent),
+                title: Text(h.name),
+                subtitle: Text([
+                  if (h.review?.rating != null) 'ocena ${h.review!.rating}',
+                  if (price != null) 'od ${price.round()} za noc',
+                ].join(' • ')),
+                trailing: const Icon(Icons.add_circle, color: Colors.green),
+                onTap: () => _selectHotel(h),
+              ),
+            );
+          },
+        );
+      case _ApiOptionCategory.attraction:
+        return ListView.builder(
+          controller: scrollController,
+          itemCount: _attractions.length,
+          itemBuilder: (context, i) {
+            final a = _attractions[i];
+            return Card(
+              child: ListTile(
+                leading: const Icon(Icons.local_activity, color: Colors.blueAccent),
+                title: Text(a['name'] ?? a['title'] ?? 'Atrakcja'),
+                trailing: const Icon(Icons.add_circle, color: Colors.green),
+                onTap: () => _selectAttraction(a),
+              ),
+            );
+          },
+        );
+    }
   }
 }

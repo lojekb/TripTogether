@@ -264,6 +264,34 @@ def _get_event_for_member(request, event_id):
     return event, None
 
 
+def _coerce_float(value):
+    try:
+        return float(value) if value is not None and value != '' else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _create_option_from_payload(poll, raw, user):
+    """Create a PollOption from either a plain string or a rich dict (API item)."""
+    if isinstance(raw, dict):
+        text = str(raw.get('text') or '').strip()
+        if not text:
+            return None
+        return PollOption.objects.create(
+            poll=poll,
+            text=text[:255],
+            item_type=(raw.get('item_type') or PollOption.ItemType.OTHER),
+            description=(raw.get('description') or '').strip(),
+            location_lat=_coerce_float(raw.get('location_lat')),
+            location_lon=_coerce_float(raw.get('location_lon')),
+            created_by=user,
+        )
+    text = str(raw).strip()
+    if not text:
+        return None
+    return PollOption.objects.create(poll=poll, text=text[:255], created_by=user)
+
+
 @api_view(['GET', 'POST'])
 def poll_list_create(request, event_id):
     event, error = _get_event_for_member(request, event_id)
@@ -276,9 +304,7 @@ def poll_list_create(request, event_id):
             return Response({"detail": "Pytanie ankiety jest wymagane."}, status=status.HTTP_400_BAD_REQUEST)
         poll = Poll.objects.create(event=event, question=question, created_by=request.user)
         for raw in request.data.get('options', []) or []:
-            text = str(raw).strip()
-            if text:
-                PollOption.objects.create(poll=poll, text=text, created_by=request.user)
+            _create_option_from_payload(poll, raw, request.user)
         return Response(PollSerializer(poll, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
     polls = (
@@ -304,7 +330,7 @@ def poll_option_create(request, event_id, poll_id):
     text = (request.data.get('text') or '').strip()
     if not text:
         return Response({"detail": "Treść propozycji jest wymagana."}, status=status.HTTP_400_BAD_REQUEST)
-    option = PollOption.objects.create(poll=poll, text=text, created_by=request.user)
+    option = _create_option_from_payload(poll, request.data, request.user)
     return Response(PollOptionSerializer(option, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
 

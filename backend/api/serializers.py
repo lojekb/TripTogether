@@ -78,7 +78,10 @@ class PollOptionSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PollOption
-        fields = ('id', 'text', 'created_by_username', 'vote_count')
+        fields = (
+            'id', 'text', 'item_type', 'description',
+            'location_lat', 'location_lon', 'created_by_username', 'vote_count',
+        )
         read_only_fields = fields
 
     def get_vote_count(self, obj):

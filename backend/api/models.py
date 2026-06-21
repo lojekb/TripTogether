@@ -166,8 +166,18 @@ class Poll(models.Model):
 
 
 class PollOption(models.Model):
+    class ItemType(models.TextChoices):
+        TRANSPORT = 'TRANSPORT', 'Transport'
+        HOTEL = 'HOTEL', 'Nocleg'
+        ATTRACTION = 'ATTRACTION', 'Atrakcja'
+        OTHER = 'OTHER', 'Inne'
+
     poll = models.ForeignKey(Poll, on_delete=models.CASCADE, related_name='options')
     text = models.CharField(max_length=255)
+    item_type = models.CharField(max_length=20, choices=ItemType.choices, default=ItemType.OTHER)
+    description = models.TextField(blank=True, default='')
+    location_lat = models.FloatField(null=True, blank=True)
+    location_lon = models.FloatField(null=True, blank=True)
     created_by = models.ForeignKey(
         'api.User',
         on_delete=models.SET_NULL,

@@ -18,6 +18,10 @@ urlpatterns = [
     path('invitations/<str:token>/', views.invitation_preview, name='invitation_preview'),
     path('invitations/<str:token>/join/', views.join_event, name='join_event'),
 
+    path('events/<str:event_id>/blueprint/', views.generate_blueprint, name='generate_blueprint'),
+    path('blueprints/<str:token>/', views.blueprint_preview, name='blueprint_preview'),
+    path('blueprints/<str:token>/copy/', views.blueprint_copy, name='blueprint_copy'),
+
     path('events/<str:event_id>/itinerary/', views.itinerary_list_create, name='itinerary_list_create'),
     path('events/<str:event_id>/itinerary/<str:item_id>/', views.itinerary_delete, name='itinerary_delete'),
 

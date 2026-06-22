@@ -83,6 +83,76 @@ class ApiService {
     }
   }
 
+  Future<Map<String, dynamic>?> generateBlueprint(
+    String eventId, {
+    required String authToken,
+  }) async {
+    try {
+      final url = Uri.parse('${ApiConstants.baseUrl}/events/$eventId/blueprint/');
+      final response = await _client.post(
+        url,
+        headers: {'Authorization': 'Token $authToken'},
+      );
+      if (response.statusCode == 201) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      }
+      debugPrint('generateBlueprint błąd: ${response.statusCode}');
+      return null;
+    } catch (e) {
+      debugPrint('generateBlueprint błąd połączenia: $e');
+      return null;
+    }
+  }
+
+  Future<Map<String, dynamic>?> getBlueprint(String token) async {
+    try {
+      final url = Uri.parse('${ApiConstants.baseUrl}/blueprints/$token/');
+      final response = await _client.get(url);
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      }
+      debugPrint('getBlueprint błąd: ${response.statusCode}');
+      return null;
+    } catch (e) {
+      debugPrint('getBlueprint błąd połączenia: $e');
+      return null;
+    }
+  }
+
+  Future<Map<String, dynamic>?> copyBlueprint(
+    String token, {
+    required String authToken,
+    String? title,
+    String? startDate,
+    String? endDate,
+    String? description,
+  }) async {
+    try {
+      final url = Uri.parse('${ApiConstants.baseUrl}/blueprints/$token/copy/');
+      final body = <String, dynamic>{};
+      if (title != null && title.trim().isNotEmpty) body['title'] = title;
+      if (startDate != null && startDate.isNotEmpty) body['start_date'] = startDate;
+      if (endDate != null && endDate.isNotEmpty) body['end_date'] = endDate;
+      if (description != null && description.isNotEmpty) body['description'] = description;
+      final response = await _client.post(
+        url,
+        headers: {
+          'Authorization': 'Token $authToken',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode(body),
+      );
+      if (response.statusCode == 201) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      }
+      debugPrint('copyBlueprint błąd: ${response.statusCode}');
+      return null;
+    } catch (e) {
+      debugPrint('copyBlueprint błąd połączenia: $e');
+      return null;
+    }
+  }
+
   Future<List<dynamic>> getNotifications({required String authToken}) async {
     try {
       final url = Uri.parse(

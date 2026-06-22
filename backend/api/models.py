@@ -120,6 +120,57 @@ class Invitation(models.Model):
     def __str__(self):
         return f'Invitation to {self.event.title} by {self.inviter.email}'
 
+
+class EventBlueprint(models.Model):
+    token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    source_event = models.ForeignKey(
+        Event,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='blueprints',
+    )
+    created_by = models.ForeignKey('api.User', on_delete=models.CASCADE, related_name='created_blueprints')
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True, default='')
+    destination_city = models.CharField(max_length=100)
+    destination_country = models.CharField(max_length=100)
+    start_date = models.DateField()
+    end_date = models.DateField()
+    max_members = models.PositiveIntegerField(null=True, blank=True)
+    itinerary = models.JSONField(default=list)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    @classmethod
+    def create_from_event(cls, event, created_by):
+        itinerary = [
+            {
+                'title': item.title,
+                'description': item.description,
+                'item_type': item.item_type,
+                'external_id': item.external_id,
+                'location_lat': item.location_lat,
+                'location_lon': item.location_lon,
+            }
+            for item in event.itinerary.order_by('created_at')
+        ]
+        return cls.objects.create(
+            source_event=event,
+            created_by=created_by,
+            title=event.title,
+            description=event.description,
+            destination_city=event.destination_city,
+            destination_country=event.destination_country,
+            start_date=event.start_date,
+            end_date=event.end_date,
+            max_members=event.max_members,
+            itinerary=itinerary,
+        )
+
+    def __str__(self):
+        return f'Blueprint of {self.title}'
+
+
 class ItineraryItem(models.Model):
     class ItemType(models.TextChoices):
         ATTRACTION = 'ATTRACTION', 'Attraction'

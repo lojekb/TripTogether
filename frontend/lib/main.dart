@@ -8,6 +8,7 @@ import 'package:trip_together/services/auth_state.dart';
 import 'package:trip_together/services/auth_service.dart';
 import 'screens/create_event_screen.dart';
 import 'screens/invite_screen.dart';
+import 'screens/blueprint_preview_screen.dart';
 import 'screens/event_details_screen.dart';
 import 'screens/notifications_screen.dart';
 
@@ -38,6 +39,16 @@ class MainApp extends StatelessWidget {
             return MaterialPageRoute(
               builder: (_) =>
                   InviteScreen(token: uri.pathSegments[1], autoJoin: autoJoin),
+            );
+          }
+          if (uri.pathSegments.length >= 2 &&
+              uri.pathSegments[0] == 'blueprint') {
+            final autoCopy = uri.queryParameters['autoCopy'] == 'true';
+            return MaterialPageRoute(
+              builder: (_) => BlueprintPreviewScreen(
+                token: uri.pathSegments[1],
+                autoCopy: autoCopy,
+              ),
             );
           }
           return null;
@@ -74,6 +85,14 @@ class _EventScreenState extends State<EventScreen> {
           Navigator.of(context).pushNamed('/invite/$token?autoJoin=true');
         });
       }
+
+      if (pendingBlueprintToken != null) {
+        final token = pendingBlueprintToken;
+        pendingBlueprintToken = null;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          Navigator.of(context).pushNamed('/blueprint/$token?autoCopy=true');
+        });
+      }
     } else {
       setState(() {
         _events = [];
@@ -105,6 +124,29 @@ class _EventScreenState extends State<EventScreen> {
     await Clipboard.setData(ClipboardData(text: inviteUrl));
     if (!mounted) return;
     messenger.showSnackBar(const SnackBar(content: Text('Link copied!')));
+  }
+
+  Future<void> _shareBlueprint(BuildContext context, String eventId) async {
+    final auth = Provider.of<AuthState>(context, listen: false);
+    if (auth.token == null) return;
+    final messenger = ScaffoldMessenger.of(context);
+    final result = await _apiService.generateBlueprint(
+      eventId,
+      authToken: auth.token!,
+    );
+    if (!mounted) return;
+    if (result == null) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Error generating link.')),
+      );
+      return;
+    }
+    final blueprintUrl = '${Uri.base.origin}/#/blueprint/${result['token']}';
+    await Clipboard.setData(ClipboardData(text: blueprintUrl));
+    if (!mounted) return;
+    messenger.showSnackBar(
+      const SnackBar(content: Text('Link do skopiowania planu skopiowany!')),
+    );
   }
 
   Future<void> _fetchEvents(String? token) async {
@@ -257,11 +299,33 @@ class _EventScreenState extends State<EventScreen> {
                     ),
                   );
                 },
-                trailing: IconButton(
+                trailing: PopupMenuButton<String>(
                   icon: const Icon(Icons.share),
-                  tooltip: 'Invite',
-                  onPressed: () =>
-                      _shareInvitation(context, event['id'].toString()),
+                  tooltip: 'Udostępnij',
+                  onSelected: (value) {
+                    final eventId = event['id'].toString();
+                    if (value == 'invite') {
+                      _shareInvitation(context, eventId);
+                    } else if (value == 'blueprint') {
+                      _shareBlueprint(context, eventId);
+                    }
+                  },
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(
+                      value: 'invite',
+                      child: ListTile(
+                        leading: Icon(Icons.person_add),
+                        title: Text('Zaproś do wydarzenia'),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'blueprint',
+                      child: ListTile(
+                        leading: Icon(Icons.copy_all),
+                        title: Text('Udostępnij plan do skopiowania'),
+                      ),
+                    ),
+                  ],
                 ),
               );
             },

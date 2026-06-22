@@ -6,7 +6,7 @@ from rest_framework import status, generics, permissions
 import requests
 from django.conf import settings
 
-from .models import Event, User, Membership, Invitation, ItineraryItem, ChatMessage, Poll, PollOption, Vote, Notification
+from .models import Event, User, Membership, Invitation, EventBlueprint, ItineraryItem, ChatMessage, Poll, PollOption, Vote, Notification
 from .serializers import (
     EventSerializer, UserRegistrationSerializer, ItineraryItemSerializer,
     ChatMessageSerializer, PollSerializer, PollOptionSerializer, NotificationSerializer,
@@ -219,6 +219,89 @@ def join_event(request, token):
         invited_by=inv.inviter,
     )
     return Response({"message": "Joined successfully."}, status=status.HTTP_201_CREATED)
+
+# 4. BLUEPRINTS (copy event as a reusable plan)
+@api_view(['POST'])
+def generate_blueprint(request, event_id):
+    if not request.user.is_authenticated:
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+    try:
+        event = Event.objects.get(pk=event_id)
+    except (Event.DoesNotExist, ValueError):
+        return Response({"detail": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
+    if not Membership.objects.filter(user=request.user, event=event).exists():
+        return Response({"detail": "Not a member of this event."}, status=status.HTTP_403_FORBIDDEN)
+    blueprint = EventBlueprint.create_from_event(event, request.user)
+    return Response({"token": str(blueprint.token)}, status=status.HTTP_201_CREATED)
+
+
+def _blueprint_payload(blueprint):
+    return {
+        "title": blueprint.title,
+        "description": blueprint.description,
+        "destination_city": blueprint.destination_city,
+        "destination_country": blueprint.destination_country,
+        "start_date": blueprint.start_date,
+        "end_date": blueprint.end_date,
+        "max_members": blueprint.max_members,
+        "itinerary_count": len(blueprint.itinerary),
+        "itinerary": blueprint.itinerary,
+    }
+
+
+@api_view(['GET'])
+def blueprint_preview(request, token):
+    try:
+        blueprint = EventBlueprint.objects.select_related('created_by').get(token=token)
+    except (EventBlueprint.DoesNotExist, ValueError):
+        return Response({"detail": "Invalid blueprint token."}, status=status.HTTP_404_NOT_FOUND)
+    return Response({
+        "blueprint": _blueprint_payload(blueprint),
+        "created_by": blueprint.created_by.username,
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+def blueprint_copy(request, token):
+    if not request.user.is_authenticated:
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+    try:
+        blueprint = EventBlueprint.objects.get(token=token)
+    except (EventBlueprint.DoesNotExist, ValueError):
+        return Response({"detail": "Invalid blueprint token."}, status=status.HTTP_404_NOT_FOUND)
+
+    payload = {
+        "title": blueprint.title,
+        "description": blueprint.description,
+        "destination_city": blueprint.destination_city,
+        "destination_country": blueprint.destination_country,
+        "start_date": blueprint.start_date,
+        "end_date": blueprint.end_date,
+        "max_members": blueprint.max_members,
+    }
+    for field in ('title', 'description', 'start_date', 'end_date'):
+        if field in request.data and str(request.data.get(field)).strip() != '':
+            payload[field] = request.data.get(field)
+
+    serializer = EventSerializer(data=payload, context={'request': request})
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    event = serializer.save(created_by=request.user, status=Event.Status.DRAFT)
+    Membership.objects.create(user=request.user, event=event, role=Membership.Role.OWNER)
+
+    for item in blueprint.itinerary:
+        ItineraryItem.objects.create(
+            event=event,
+            title=item.get('title', ''),
+            description=item.get('description', '') or '',
+            item_type=item.get('item_type') or ItineraryItem.ItemType.OTHER,
+            external_id=item.get('external_id'),
+            location_lat=item.get('location_lat'),
+            location_lon=item.get('location_lon'),
+            created_by=request.user,
+        )
+
+    return Response(EventSerializer(event, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
 # 5. ITINERARY
 @api_view(['GET', 'POST'])

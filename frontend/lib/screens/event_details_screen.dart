@@ -32,8 +32,8 @@ class EventDetailsScreen extends StatelessWidget {
           title: Text(event['title'] ?? 'Szczegóły wycieczki'),
           actions: [
             IconButton(
-              icon: const Icon(Icons.group),
-              tooltip: canManageRoles ? 'Zarządzaj rolami' : 'Uczestnicy',
+              icon: Icon(canManageRoles ? Icons.manage_accounts : Icons.group),
+              tooltip: canManageRoles ? 'Zarządzaj wydarzeniem' : 'Uczestnicy',
               onPressed: () {
                 Navigator.of(context).push(
                   MaterialPageRoute(
@@ -42,6 +42,7 @@ class EventDetailsScreen extends StatelessWidget {
                       eventTitle: event['title'] ?? '',
                       canManageRoles: canManageRoles,
                       currentUserRole: event['my_role'] as String?,
+                      event: event,
                     ),
                   ),
                 );

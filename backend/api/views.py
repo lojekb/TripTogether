@@ -640,6 +640,33 @@ def member_role_update(request, event_id, user_id):
 
     return Response(MembershipSerializer(target).data, status=status.HTTP_200_OK)
 
+
+@api_view(['DELETE'])
+def member_remove(request, event_id, user_id):
+    event, membership_or_error = _get_event_with_member_access(request, event_id)
+    if event is None:
+        return membership_or_error
+    requester = membership_or_error
+
+    if not requester.can_manage_roles:
+        return Response({"detail": "Tylko organizator lub administrator może usuwać uczestników."}, status=status.HTTP_403_FORBIDDEN)
+
+    try:
+        target = event.memberships.select_related('user').get(user_id=user_id)
+    except (Membership.DoesNotExist, ValueError):
+        return Response({"detail": "Uczestnik nie należy do tego wydarzenia."}, status=status.HTTP_404_NOT_FOUND)
+
+    if target.user_id == requester.user_id:
+        return Response({"detail": "Nie możesz usunąć samego siebie z wydarzenia."}, status=status.HTTP_400_BAD_REQUEST)
+    if target.role == Membership.Role.OWNER:
+        return Response({"detail": "Nie można usunąć właściciela wydarzenia."}, status=status.HTTP_403_FORBIDDEN)
+    # Only the owner may remove an admin.
+    if target.role == Membership.Role.ADMIN and requester.role != Membership.Role.OWNER:
+        return Response({"detail": "Tylko właściciel może usunąć administratora."}, status=status.HTTP_403_FORBIDDEN)
+
+    target.delete()
+    return Response({"detail": "Uczestnik został usunięty z wydarzenia."}, status=status.HTTP_200_OK)
+
 # 7. CHAT
 @api_view(['GET', 'POST'])
 def chat_messages(request, event_id):

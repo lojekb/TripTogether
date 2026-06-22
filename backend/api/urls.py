@@ -13,6 +13,7 @@ urlpatterns = [
 
     path('events/<str:event_id>/members/', views.event_members, name='event_members'),
     path('events/<str:event_id>/members/<str:user_id>/role/', views.member_role_update, name='member_role_update'),
+    path('events/<str:event_id>/members/<str:user_id>/', views.member_remove, name='member_remove'),
 
     path('events/<str:event_id>/invitations/', views.generate_invitation, name='generate_invitation'),
     path('invitations/<str:token>/', views.invitation_preview, name='invitation_preview'),

@@ -347,6 +347,95 @@ class RoleManagementTests(APITestCase):
         self.assertEqual(len(resp.data), 3)
 
 
+class MemberManagementTests(APITestCase):
+    def setUp(self):
+        from api.models import Event, Membership
+        self.Membership = Membership
+        self.owner = User.objects.create_user(email='mm_owner@x.com', username='mmowner', password='Pass!')
+        self.admin = User.objects.create_user(email='mm_admin@x.com', username='mmadmin', password='Pass!')
+        self.admin2 = User.objects.create_user(email='mm_admin2@x.com', username='mmadmin2', password='Pass!')
+        self.member = User.objects.create_user(email='mm_member@x.com', username='mmmember', password='Pass!')
+        self.outsider = User.objects.create_user(email='mm_out@x.com', username='mmout', password='Pass!')
+        self.event = Event.objects.create(
+            title='Manage Trip', destination_city='Wrocław', destination_country='Poland',
+            start_date='2026-08-01', end_date='2026-08-05', created_by=self.owner,
+        )
+        Membership.objects.create(user=self.owner, event=self.event, role=Membership.Role.OWNER)
+        Membership.objects.create(user=self.admin, event=self.event, role=Membership.Role.ADMIN)
+        Membership.objects.create(user=self.admin2, event=self.event, role=Membership.Role.ADMIN)
+        Membership.objects.create(user=self.member, event=self.event, role=Membership.Role.MEMBER)
+        self.event_url = f'/api/v1/events/{self.event.id}/'
+
+    def _remove_url(self, user):
+        return f'/api/v1/events/{self.event.id}/members/{user.id}/'
+
+    # --- removing members ---
+    def test_remove_requires_auth(self):
+        self.assertEqual(self.client.delete(self._remove_url(self.member)).status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_outsider_cannot_remove(self):
+        self.client.force_authenticate(user=self.outsider)
+        self.assertEqual(self.client.delete(self._remove_url(self.member)).status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_member_cannot_remove(self):
+        self.client.force_authenticate(user=self.member)
+        self.assertEqual(self.client.delete(self._remove_url(self.admin)).status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_owner_can_remove_member(self):
+        self.client.force_authenticate(user=self.owner)
+        resp = self.client.delete(self._remove_url(self.member))
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertFalse(self.Membership.objects.filter(user=self.member, event=self.event).exists())
+
+    def test_admin_can_remove_member(self):
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.delete(self._remove_url(self.member))
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertFalse(self.Membership.objects.filter(user=self.member, event=self.event).exists())
+
+    def test_cannot_remove_owner(self):
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.delete(self._remove_url(self.owner))
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(self.Membership.objects.filter(user=self.owner, event=self.event).exists())
+
+    def test_admin_cannot_remove_admin(self):
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.delete(self._remove_url(self.admin2))
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(self.Membership.objects.filter(user=self.admin2, event=self.event).exists())
+
+    def test_owner_can_remove_admin(self):
+        self.client.force_authenticate(user=self.owner)
+        resp = self.client.delete(self._remove_url(self.admin))
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertFalse(self.Membership.objects.filter(user=self.admin, event=self.event).exists())
+
+    def test_cannot_remove_self(self):
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.delete(self._remove_url(self.admin))
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(self.Membership.objects.filter(user=self.admin, event=self.event).exists())
+
+    def test_remove_nonmember_returns_404(self):
+        self.client.force_authenticate(user=self.owner)
+        resp = self.client.delete(self._remove_url(self.outsider))
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+    # --- editing general event details (owner & admin) ---
+    def test_admin_can_update_event_details(self):
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.put(self.event_url, {'title': 'Zmieniona nazwa', 'start_date': '2026-09-01'}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.title, 'Zmieniona nazwa')
+
+    def test_member_cannot_update_event_details(self):
+        self.client.force_authenticate(user=self.member)
+        resp = self.client.put(self.event_url, {'title': 'Niedozwolone'}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+
 class ChatTests(APITestCase):
     def setUp(self):
         from api.models import Event, Membership

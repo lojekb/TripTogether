@@ -244,6 +244,109 @@ class NotificationTests(APITestCase):
         self.assertTrue(mark_read.data['is_read'])
 
 
+class RoleManagementTests(APITestCase):
+    def setUp(self):
+        from api.models import Event, Membership
+        self.Membership = Membership
+        self.owner = User.objects.create_user(email='role_owner@x.com', username='roleowner', password='Pass!')
+        self.admin = User.objects.create_user(email='role_admin@x.com', username='roleadmin', password='Pass!')
+        self.member = User.objects.create_user(email='role_member@x.com', username='rolemember', password='Pass!')
+        self.outsider = User.objects.create_user(email='role_out@x.com', username='roleout', password='Pass!')
+        self.event = Event.objects.create(
+            title='Role Trip', destination_city='Wrocław', destination_country='Poland',
+            start_date='2026-08-01', end_date='2026-08-05', created_by=self.owner,
+        )
+        Membership.objects.create(user=self.owner, event=self.event, role=Membership.Role.OWNER)
+        Membership.objects.create(user=self.admin, event=self.event, role=Membership.Role.ADMIN)
+        self.member_ship = Membership.objects.create(user=self.member, event=self.event, role=Membership.Role.MEMBER)
+        self.itinerary_url = f'/api/v1/events/{self.event.id}/itinerary/'
+        self.polls_url = f'/api/v1/events/{self.event.id}/polls/'
+        self.members_url = f'/api/v1/events/{self.event.id}/members/'
+
+    def _role_url(self, user):
+        return f'/api/v1/events/{self.event.id}/members/{user.id}/role/'
+
+    def test_member_cannot_add_itinerary(self):
+        self.client.force_authenticate(user=self.member)
+        resp = self.client.post(self.itinerary_url, {'title': 'Muzeum'}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_member_can_read_itinerary(self):
+        self.client.force_authenticate(user=self.member)
+        self.assertEqual(self.client.get(self.itinerary_url).status_code, status.HTTP_200_OK)
+
+    def test_member_cannot_create_poll(self):
+        self.client.force_authenticate(user=self.member)
+        resp = self.client.post(self.polls_url, {'question': 'X'}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_owner_can_add_itinerary(self):
+        self.client.force_authenticate(user=self.owner)
+        resp = self.client.post(self.itinerary_url, {'title': 'Rynek'}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+
+    def test_my_role_exposed_in_event_list(self):
+        self.client.force_authenticate(user=self.member)
+        resp = self.client.get('/api/v1/events/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        ours = next(e for e in resp.data if e['id'] == self.event.id)
+        self.assertEqual(ours['my_role'], 'MEMBER')
+        self.assertFalse(ours['can_contribute'])
+
+    def test_promote_member_to_editor_then_can_contribute(self):
+        self.client.force_authenticate(user=self.owner)
+        resp = self.client.put(self._role_url(self.member), {'role': 'EDITOR'}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data['role'], 'EDITOR')
+
+        self.client.force_authenticate(user=self.member)
+        add = self.client.post(self.itinerary_url, {'title': 'Most'}, format='json')
+        self.assertEqual(add.status_code, status.HTTP_201_CREATED)
+
+    def test_member_cannot_manage_roles(self):
+        self.client.force_authenticate(user=self.member)
+        resp = self.client.put(self._role_url(self.admin), {'role': 'MEMBER'}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_cannot_grant_admin(self):
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.put(self._role_url(self.member), {'role': 'ADMIN'}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_can_promote_member_to_editor(self):
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.put(self._role_url(self.member), {'role': 'EDITOR'}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data['role'], 'EDITOR')
+
+    def test_cannot_change_owner_role(self):
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.put(self._role_url(self.owner), {'role': 'MEMBER'}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_invalid_role_rejected(self):
+        self.client.force_authenticate(user=self.owner)
+        resp = self.client.put(self._role_url(self.member), {'role': 'SUPERBOSS'}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_role_change_creates_notification_for_target(self):
+        self.client.force_authenticate(user=self.owner)
+        self.client.put(self._role_url(self.member), {'role': 'EDITOR'}, format='json')
+        self.client.force_authenticate(user=self.member)
+        notifs = self.client.get('/api/v1/notifications/')
+        self.assertTrue(any(n['notification_type'] == 'ROLE_CHANGED' for n in notifs.data))
+
+    def test_members_list_requires_membership(self):
+        self.client.force_authenticate(user=self.outsider)
+        self.assertEqual(self.client.get(self.members_url).status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_members_list_returns_all(self):
+        self.client.force_authenticate(user=self.member)
+        resp = self.client.get(self.members_url)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(resp.data), 3)
+
+
 class ChatTests(APITestCase):
     def setUp(self):
         from api.models import Event, Membership

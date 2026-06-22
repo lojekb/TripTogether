@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
-from .models import Event, ItineraryItem, ChatMessage, Poll, PollOption, Notification
+from .models import Event, ItineraryItem, ChatMessage, Poll, PollOption, Notification, Membership
 
 class EventSerializer(serializers.ModelSerializer):
     class Meta:
@@ -17,6 +17,30 @@ class EventSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"end_date": "Data zakończenia nie może być wcześniejsza niż data rozpoczęcia wydarzenia."})
         
         return data
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        membership = None
+        if user is not None and getattr(user, 'is_authenticated', False):
+            membership = instance.memberships.filter(user=user).first()
+        data['my_role'] = membership.role if membership else None
+        data['can_contribute'] = membership.can_contribute if membership else False
+        data['can_manage_roles'] = membership.can_manage_roles if membership else False
+        return data
+
+
+class MembershipSerializer(serializers.ModelSerializer):
+    user_id = serializers.IntegerField(source='user.id', read_only=True)
+    username = serializers.CharField(source='user.username', read_only=True)
+    email = serializers.EmailField(source='user.email', read_only=True)
+    role_display = serializers.CharField(source='get_role_display', read_only=True)
+
+    class Meta:
+        model = Membership
+        fields = ('id', 'user_id', 'username', 'email', 'role', 'role_display', 'joined_at')
+        read_only_fields = fields
 
 
 # User registration serializer

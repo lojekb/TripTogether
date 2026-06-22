@@ -65,9 +65,15 @@ class Event(models.Model):
 
 class Membership(models.Model):
     class Role(models.TextChoices):
-        OWNER = 'OWNER', 'Owner'
-        ADMIN = 'ADMIN', 'Admin'
-        MEMBER = 'MEMBER', 'Member'
+        OWNER = 'OWNER', 'Właściciel'
+        ADMIN = 'ADMIN', 'Administrator'
+        EDITOR = 'EDITOR', 'Uprawniony'
+        MEMBER = 'MEMBER', 'Członek'
+
+    # Roles allowed to add/modify event content (plan, polls, invitations).
+    CONTRIBUTOR_ROLES = (Role.OWNER, Role.ADMIN, Role.EDITOR)
+    # Roles allowed to manage other members' roles.
+    MANAGER_ROLES = (Role.OWNER, Role.ADMIN)
 
     user = models.ForeignKey('api.User', on_delete=models.CASCADE, related_name='memberships')
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='memberships')
@@ -83,6 +89,14 @@ class Membership(models.Model):
 
     class Meta:
         unique_together = [('user', 'event')]
+
+    @property
+    def can_contribute(self):
+        return self.role in self.CONTRIBUTOR_ROLES
+
+    @property
+    def can_manage_roles(self):
+        return self.role in self.MANAGER_ROLES
 
     def __str__(self):
         return f'{self.user.email} – {self.event.title} ({self.role})'
@@ -213,6 +227,7 @@ class Notification(models.Model):
         POLL_CREATED = 'POLL_CREATED', 'Poll created'
         POLL_OPTION_ADDED = 'POLL_OPTION_ADDED', 'Poll option added'
         POLL_CLOSED = 'POLL_CLOSED', 'Poll closed'
+        ROLE_CHANGED = 'ROLE_CHANGED', 'Role changed'
 
     recipient = models.ForeignKey('api.User', on_delete=models.CASCADE, related_name='notifications')
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='notifications', null=True, blank=True)

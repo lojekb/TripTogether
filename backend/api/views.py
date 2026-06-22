@@ -10,6 +10,7 @@ from .models import Event, User, Membership, Invitation, ItineraryItem, ChatMess
 from .serializers import (
     EventSerializer, UserRegistrationSerializer, ItineraryItemSerializer,
     ChatMessageSerializer, PollSerializer, PollOptionSerializer, NotificationSerializer,
+    MembershipSerializer,
 )
 
 # 1. AUTH & USERS
@@ -99,6 +100,17 @@ def _get_event_with_member_access(request, event_id):
 
     return event, membership
 
+
+def _forbid_if_not_contributor(membership):
+    """Return a 403 Response when the membership cannot add/modify content, else None."""
+    if not membership.can_contribute:
+        return Response(
+            {"detail": "Twoja rola nie pozwala na dodawanie ani modyfikowanie treści wydarzenia. "
+                       "Poproś organizatora o nadanie uprawnień (rola „Uprawniony”)."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    return None
+
 # 2. EVENTS
 @api_view(['GET', 'POST'])
 def event_list_create(request):
@@ -106,7 +118,7 @@ def event_list_create(request):
         return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
 
     if request.method == 'POST':
-        serializer = EventSerializer(data=request.data)
+        serializer = EventSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
             event = serializer.save(created_by=request.user)
             Membership.objects.create(user=request.user, event=event, role=Membership.Role.OWNER)
@@ -114,7 +126,7 @@ def event_list_create(request):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     events = Event.objects.filter(memberships__user=request.user)
-    serializer = EventSerializer(events, many=True)
+    serializer = EventSerializer(events, many=True, context={'request': request})
     return Response(serializer.data, status=status.HTTP_200_OK)
 
 
@@ -125,12 +137,12 @@ def event_detail_update(request, event_id):
         return membership_or_error
 
     if request.method == 'GET':
-        return Response(EventSerializer(event).data, status=status.HTTP_200_OK)
+        return Response(EventSerializer(event, context={'request': request}).data, status=status.HTTP_200_OK)
 
     if membership_or_error.role not in (Membership.Role.OWNER, Membership.Role.ADMIN):
         return Response({"detail": "Only event owners or admins can update the event."}, status=status.HTTP_403_FORBIDDEN)
 
-    serializer = EventSerializer(event, data=request.data, partial=True)
+    serializer = EventSerializer(event, data=request.data, partial=True, context={'request': request})
     serializer.is_valid(raise_exception=True)
 
     changed_fields = [field for field, value in serializer.validated_data.items() if getattr(event, field) != value]
@@ -145,7 +157,7 @@ def event_detail_update(request, event_id):
             actor=request.user,
         )
 
-    return Response(EventSerializer(updated_event).data, status=status.HTTP_200_OK)
+    return Response(EventSerializer(updated_event, context={'request': request}).data, status=status.HTTP_200_OK)
 
 # 3. INVITATIONS
 @api_view(['POST'])
@@ -156,8 +168,12 @@ def generate_invitation(request, event_id):
         event = Event.objects.get(pk=event_id)
     except (Event.DoesNotExist, ValueError):
         return Response({"detail": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
-    if not Membership.objects.filter(user=request.user, event=event).exists():
+    membership = Membership.objects.filter(user=request.user, event=event).first()
+    if not membership:
         return Response({"detail": "Not a member of this event."}, status=status.HTTP_403_FORBIDDEN)
+    forbidden = _forbid_if_not_contributor(membership)
+    if forbidden:
+        return forbidden
     invitation = Invitation.objects.create(event=event, inviter=request.user)
     return Response({"token": str(invitation.token), "expires_at": invitation.expires_at}, status=status.HTTP_201_CREATED)
 
@@ -207,15 +223,15 @@ def join_event(request, token):
 # 5. ITINERARY
 @api_view(['GET', 'POST'])
 def itinerary_list_create(request, event_id):
-    try:
-        event = Event.objects.get(pk=event_id)
-    except (Event.DoesNotExist, ValueError):
-        return Response({"detail": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
-
-    if not request.user.is_authenticated or not Membership.objects.filter(user=request.user, event=event).exists():
-        return Response({"detail": "Not authorized to view or edit this itinerary."}, status=status.HTTP_403_FORBIDDEN)
+    event, membership_or_error = _get_event_with_member_access(request, event_id)
+    if event is None:
+        return membership_or_error
+    membership = membership_or_error
 
     if request.method == 'POST':
+        forbidden = _forbid_if_not_contributor(membership)
+        if forbidden:
+            return forbidden
         serializer = ItineraryItemSerializer(data=request.data)
         if serializer.is_valid():
             title = serializer.validated_data.get('title')
@@ -238,12 +254,17 @@ def itinerary_delete(request, event_id, item_id):
 
     try:
         item = ItineraryItem.objects.get(pk=item_id, event_id=event_id)
-        if not Membership.objects.filter(user=request.user, event_id=event_id).exists():
-            return Response({"detail": "Not authorized to delete from this itinerary."}, status=status.HTTP_403_FORBIDDEN)
-        item.delete()
-        return Response({"message": "Item deleted"}, status=status.HTTP_204_NO_CONTENT)
     except (ItineraryItem.DoesNotExist, ValueError):
         return Response({"detail": "Item not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    membership = Membership.objects.filter(user=request.user, event_id=event_id).first()
+    if not membership:
+        return Response({"detail": "Not authorized to delete from this itinerary."}, status=status.HTTP_403_FORBIDDEN)
+    forbidden = _forbid_if_not_contributor(membership)
+    if forbidden:
+        return forbidden
+    item.delete()
+    return Response({"message": "Item deleted"}, status=status.HTTP_204_NO_CONTENT)
 
 @api_view(['GET'])
 def search_attractions(request):
@@ -356,6 +377,10 @@ def poll_list_create(request, event_id):
         return error
 
     if request.method == 'POST':
+        membership = Membership.objects.filter(user=request.user, event=event).first()
+        forbidden = _forbid_if_not_contributor(membership)
+        if forbidden:
+            return forbidden
         question = (request.data.get('question') or '').strip()
         if not question:
             return Response({"detail": "Pytanie ankiety jest wymagane."}, status=status.HTTP_400_BAD_REQUEST)
@@ -476,6 +501,61 @@ def notification_mark_read(request, notification_id):
         return Response({"detail": "Notification not found."}, status=status.HTTP_404_NOT_FOUND)
     notification.mark_as_read()
     return Response(NotificationSerializer(notification).data, status=status.HTTP_200_OK)
+
+
+# 8. ROLE MANAGEMENT
+@api_view(['GET'])
+def event_members(request, event_id):
+    event, membership_or_error = _get_event_with_member_access(request, event_id)
+    if event is None:
+        return membership_or_error
+    members = event.memberships.select_related('user').order_by('joined_at')
+    return Response(MembershipSerializer(members, many=True).data, status=status.HTTP_200_OK)
+
+
+@api_view(['PUT'])
+def member_role_update(request, event_id, user_id):
+    event, membership_or_error = _get_event_with_member_access(request, event_id)
+    if event is None:
+        return membership_or_error
+    requester = membership_or_error
+
+    if not requester.can_manage_roles:
+        return Response({"detail": "Tylko organizator lub administrator może zarządzać rolami."}, status=status.HTTP_403_FORBIDDEN)
+
+    try:
+        target = event.memberships.select_related('user').get(user_id=user_id)
+    except (Membership.DoesNotExist, ValueError):
+        return Response({"detail": "Uczestnik nie należy do tego wydarzenia."}, status=status.HTTP_404_NOT_FOUND)
+
+    new_role = request.data.get('role')
+    assignable = {Membership.Role.MEMBER, Membership.Role.EDITOR, Membership.Role.ADMIN}
+    if new_role not in assignable:
+        return Response(
+            {"detail": "Nieprawidłowa rola. Dozwolone: MEMBER, EDITOR, ADMIN."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if target.role == Membership.Role.OWNER:
+        return Response({"detail": "Nie można zmienić roli właściciela wydarzenia."}, status=status.HTTP_403_FORBIDDEN)
+    if target.user_id == requester.user_id:
+        return Response({"detail": "Nie możesz zmienić własnej roli."}, status=status.HTTP_400_BAD_REQUEST)
+    # Only the owner may grant or revoke the ADMIN role.
+    if (new_role == Membership.Role.ADMIN or target.role == Membership.Role.ADMIN) and requester.role != Membership.Role.OWNER:
+        return Response({"detail": "Tylko właściciel może nadawać lub odbierać rolę administratora."}, status=status.HTTP_403_FORBIDDEN)
+
+    if target.role != new_role:
+        target.role = new_role
+        target.save(update_fields=['role'])
+        Notification.objects.create(
+            recipient=target.user,
+            event=event,
+            actor=request.user,
+            notification_type=Notification.NotificationType.ROLE_CHANGED,
+            title=f'Twoja rola w wydarzeniu "{event.title}" została zmieniona',
+            message=f'Nowa rola: {target.get_role_display()}.',
+        )
+
+    return Response(MembershipSerializer(target).data, status=status.HTTP_200_OK)
 
 # 7. CHAT
 @api_view(['GET', 'POST'])
